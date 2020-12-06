@@ -1,0 +1,101 @@
+select role, preferred_role, mode, status from gp_segment_configuration where content=-1;
+ role | preferred_role | mode | status 
+------+----------------+------+--------
+ p    | p              | s    | u
+ m    | m              | s    | u
+(2 rows)
+
+-- start_ignore
+create or replace language plpythonu;
+create or replace function run_gpinitstandby(host text, port text, datadir text, envport text)
+returns text as $$
+    import subprocess
+    cmd = 'PGPORT=%s /home/gpadmin/workspace/gpdb.master/bin/gpinitstandby -s %s -P %s -F %s -a' % (envport, host, port, datadir)
+    try:
+        res = subprocess.check_output(cmd, stderr=subprocess.STDOUT, shell=True).replace('.', '')
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError("command '{}' return with error (code {}): {}".format(e.cmd, e.returncode, e.output))
+    return res
+$$ language plpythonu;
+select hostname as standby_host, port as standby_port, datadir as standby_datadir from gp_segment_configuration where content=-1 and preferred_role='m'; \gset
+ standby_host | standby_port |                      standby_datadir                       
+--------------+--------------+------------------------------------------------------------
+ master       |        16432 | /home/gpadmin/workspace/gpdb/gpAux/gpdemo/datadirs/standby
+(1 row)
+
+select port as master_port from gp_segment_configuration where content=-1 and preferred_role='p'; \gset
+ master_port 
+-------------
+       15432
+(1 row)
+
+-- end_ignore
+-- remove the current standby
+-- start_ignore
+\! gpinitstandby -ra
+20190117:09:06:04:075711 gpinitstandby:master:gpadmin-[INFO]:------------------------------------------------------
+20190117:09:06:04:075711 gpinitstandby:master:gpadmin-[INFO]:-Warm master standby removal parameters
+20190117:09:06:04:075711 gpinitstandby:master:gpadmin-[INFO]:------------------------------------------------------
+20190117:09:06:04:075711 gpinitstandby:master:gpadmin-[INFO]:-Greenplum master hostname               = master
+20190117:09:06:04:075711 gpinitstandby:master:gpadmin-[INFO]:-Greenplum master data directory         = /home/gpadmin/workspace/gpdb/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20190117:09:06:04:075711 gpinitstandby:master:gpadmin-[INFO]:-Greenplum master port                   = 15432
+20190117:09:06:04:075711 gpinitstandby:master:gpadmin-[INFO]:-Greenplum standby master hostname       = master
+20190117:09:06:04:075711 gpinitstandby:master:gpadmin-[INFO]:-Greenplum standby master port           = 16432
+20190117:09:06:04:075711 gpinitstandby:master:gpadmin-[INFO]:-Greenplum standby master data directory = /home/gpadmin/workspace/gpdb/gpAux/gpdemo/datadirs/standby
+20190117:09:06:04:075711 gpinitstandby:master:gpadmin-[INFO]:-Removing standby master from catalog...
+20190117:09:06:04:075711 gpinitstandby:master:gpadmin-[INFO]:-Database catalog updated successfully.
+20190117:09:06:05:075711 gpinitstandby:master:gpadmin-[INFO]:-Stopping standby master on master
+20190117:09:06:05:075711 gpinitstandby:master:gpadmin-[INFO]:-Removing data directory on standby master...
+20190117:09:06:52:075711 gpinitstandby:master:gpadmin-[INFO]:-Successfully removed standby master
+-- end_ignore
+select role, preferred_role, mode, status from gp_segment_configuration where content=-1;
+ role | preferred_role | mode | status 
+------+----------------+------+--------
+ p    | p              | s    | u
+(1 row)
+
+-- initialize a standby
+-- start_ignore
+select run_gpinitstandby(:'standby_host', :'standby_port', :'standby_datadir', :'master_port');
+                                                                                       run_gpinitstandby                                                                                       
+-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ 20190117:09:06:52:075928 gpinitstandby:master:gpadmin-[INFO]:-Validating environment and parameters for standby initialization                                                               +
+ 20190117:09:06:52:075928 gpinitstandby:master:gpadmin-[INFO]:-Checking for data directory /home/gpadmin/workspace/gpdb/gpAux/gpdemo/datadirs/standby on master                               +
+ 20190117:09:06:52:075928 gpinitstandby:master:gpadmin-[INFO]:------------------------------------------------------                                                                          +
+ 20190117:09:06:52:075928 gpinitstandby:master:gpadmin-[INFO]:-Greenplum standby master initialization parameters                                                                             +
+ 20190117:09:06:52:075928 gpinitstandby:master:gpadmin-[INFO]:------------------------------------------------------                                                                          +
+ 20190117:09:06:52:075928 gpinitstandby:master:gpadmin-[INFO]:-Greenplum master hostname               = master                                                                               +
+ 20190117:09:06:52:075928 gpinitstandby:master:gpadmin-[INFO]:-Greenplum master data directory         = /home/gpadmin/workspace/gpdb/gpAux/gpdemo/datadirs/qddir/demoDataDir-1               +
+ 20190117:09:06:52:075928 gpinitstandby:master:gpadmin-[INFO]:-Greenplum master port                   = 15432                                                                                +
+ 20190117:09:06:52:075928 gpinitstandby:master:gpadmin-[INFO]:-Greenplum standby master hostname       = master                                                                               +
+ 20190117:09:06:52:075928 gpinitstandby:master:gpadmin-[INFO]:-Greenplum standby master port           = 16432                                                                                +
+ 20190117:09:06:52:075928 gpinitstandby:master:gpadmin-[INFO]:-Greenplum standby master data directory = /home/gpadmin/workspace/gpdb/gpAux/gpdemo/datadirs/standby                           +
+ 20190117:09:06:52:075928 gpinitstandby:master:gpadmin-[INFO]:-Greenplum update system catalog         = On                                                                                   +
+ 20190117:09:06:52:075928 gpinitstandby:master:gpadmin-[INFO]:-Syncing Greenplum Database extensions to standby                                                                               +
+ 20190117:09:06:53:075928 gpinitstandby:master:gpadmin-[INFO]:-The packages on master are consistent                                                                                          +
+ 20190117:09:06:53:075928 gpinitstandby:master:gpadmin-[INFO]:-Adding standby master to catalog                                                                                               +
+ 20190117:09:06:53:075928 gpinitstandby:master:gpadmin-[INFO]:-Database catalog updated successfully                                                                                          +
+ 20190117:09:06:53:075928 gpinitstandby:master:gpadmin-[INFO]:-Updating pg_hbaconf file                                                                                                       +
+ 20190117:09:06:54:075928 gpinitstandby:master:gpadmin-[INFO]:-pg_hbaconf files updated successfully                                                                                          +
+ 20190117:09:06:56:075928 gpinitstandby:master:gpadmin-[INFO]:-Starting standby master                                                                                                        +
+ 20190117:09:06:56:075928 gpinitstandby:master:gpadmin-[INFO]:-Checking if standby master is running on host: master  in directory: /home/gpadmin/workspace/gpdb/gpAux/gpdemo/datadirs/standby+
+ 20190117:09:06:57:075928 gpinitstandby:master:gpadmin-[INFO]:-Cleaning up pg_hbaconf backup files                                                                                            +
+ 20190117:09:06:58:075928 gpinitstandby:master:gpadmin-[INFO]:-Backup files of pg_hbaconf cleaned up successfully                                                                             +
+ 20190117:09:06:58:075928 gpinitstandby:master:gpadmin-[INFO]:-Successfully created standby master on master                                                                                  +
+ 
+(1 row)
+
+-- end_ignore
+select gp_request_fts_probe_scan();
+ gp_request_fts_probe_scan 
+---------------------------
+ t
+(1 row)
+
+select role, preferred_role, mode, status from gp_segment_configuration where content=-1;
+ role | preferred_role | mode | status 
+------+----------------+------+--------
+ p    | p              | s    | u
+ m    | m              | s    | u
+(2 rows)
+

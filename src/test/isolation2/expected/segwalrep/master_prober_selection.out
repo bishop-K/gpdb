@@ -1,0 +1,143 @@
+-- Tests master prober selection
+--
+-- When the master prober segment is down, master will
+-- start another master prober on another segment if
+-- master and standby are in-sync.
+--
+
+include: helpers/server_helpers.sql;
+CREATE
+
+create extension if not exists gp_inject_fault;
+CREATE
+
+-- stop primary segment 0
+select pg_ctl(datadir, 'stop') from gp_segment_configuration where content = 0 and role = 'p';
+ pg_ctl                                               
+------------------------------------------------------
+ waiting for server to shut down done
+server stopped
+ 
+(1 row)
+-- trigger manual probe
+select gp_request_fts_probe_scan();
+ gp_request_fts_probe_scan 
+---------------------------
+ t                         
+(1 row)
+-- mirror segment 0 will be promoted
+select role, preferred_role from gp_segment_configuration where content = 0;
+ role | preferred_role 
+------+----------------
+ m    | m              
+ p    | p              
+(2 rows)
+-- wait until master prober is started
+do $$ begin /* in func */ for i in 1..120 loop /* in func */ begin if (select gp_request_fts_probe_scan() from gp_dist_random('gp_id') where gp_segment_id = 0) then /* in func */ return; /* in func */ end if; /* in func */ exception when others then /* in func */ end; /*in func */ perform gp_request_fts_probe_scan(); /* in func */ end loop; /* in func */ end; /* in func */ $$;
+DO
+-- stop standby
+select pg_ctl(datadir, 'stop') from gp_segment_configuration where content=-1 and role='m';
+ pg_ctl                                               
+------------------------------------------------------
+ waiting for server to shut down done
+server stopped
+ 
+(1 row)
+-- master transaction should be blocked
+1: begin;
+BEGIN
+1&: end;  <waiting ...>
+-- verify the master prober can still work
+0U: select gp_request_fts_probe_scan();
+ gp_request_fts_probe_scan 
+---------------------------
+ t                         
+(1 row)
+1<:  <... completed>
+END
+
+-- start standby
+select pg_ctl_start(datadir, port, content, dbid) from gp_segment_configuration where content=-1 and role='m';
+ pg_ctl_start     
+------------------
+ server starting
+ 
+(1 row)
+-- wait standby is in-sync
+do $$ begin /* in func */ for i in 1..120 loop /* in func */ if (select sync_state='sync' from pg_stat_replication) then /* in func */ return; /* in func */ end if; /* in func */ perform gp_request_fts_probe_scan(); /* in func */ end loop; /* in func */ end; /* in func */ $$;
+DO
+-- and trigger manual probe
+select gp_request_fts_probe_scan();
+ gp_request_fts_probe_scan 
+---------------------------
+ t                         
+(1 row)
+
+-- recover and rebalance segment 0
+!\retcode gprecoverseg -a;
+-- start_ignore
+20190115:09:32:16:204874 gprecoverseg:master:gpadmin-[INFO]:-Starting gprecoverseg with args: -a
+20190115:09:32:16:204874 gprecoverseg:master:gpadmin-[INFO]:-local Greenplum Version: 'postgres (Greenplum Database) 6.0.0-alpha.0+dev.15488.g9e6c513cb5 build dev-oss'
+20190115:09:32:16:204874 gprecoverseg:master:gpadmin-[INFO]:-master Greenplum Version: 'PostgreSQL 9.4.20 (Greenplum Database 6.0.0-alpha.0+dev.15488.g9e6c513cb5 build dev-oss) on x86_64-unknown-linux-gnu, compiled by gcc (GCC) 6.2.0, 64-bit compiled on Jan  9 2019 08:37:15 (with assert checking)'
+20190115:09:32:16:204874 gprecoverseg:master:gpadmin-[INFO]:-Obtaining Segment details from master...
+20190115:09:32:17:204874 gprecoverseg:master:gpadmin-[INFO]:-Heap checksum setting is consistent between master and the segments that are candidates for recoverseg
+20190115:09:32:17:204874 gprecoverseg:master:gpadmin-[INFO]:-Greenplum instance recovery parameters
+20190115:09:32:17:204874 gprecoverseg:master:gpadmin-[INFO]:----------------------------------------------------------
+20190115:09:32:17:204874 gprecoverseg:master:gpadmin-[INFO]:-Recovery type              = Standard
+20190115:09:32:17:204874 gprecoverseg:master:gpadmin-[INFO]:----------------------------------------------------------
+20190115:09:32:17:204874 gprecoverseg:master:gpadmin-[INFO]:-Recovery 1 of 1
+20190115:09:32:17:204874 gprecoverseg:master:gpadmin-[INFO]:----------------------------------------------------------
+20190115:09:32:17:204874 gprecoverseg:master:gpadmin-[INFO]:-   Synchronization mode                 = Incremental
+20190115:09:32:17:204874 gprecoverseg:master:gpadmin-[INFO]:-   Failed instance host                 = master
+20190115:09:32:17:204874 gprecoverseg:master:gpadmin-[INFO]:-   Failed instance address              = master
+20190115:09:32:17:204874 gprecoverseg:master:gpadmin-[INFO]:-   Failed instance directory            = /home/gpadmin/workspace/gpdb/gpAux/gpdemo/datadirs/dbfast_mirror1/demoDataDir0
+20190115:09:32:17:204874 gprecoverseg:master:gpadmin-[INFO]:-   Failed instance port                 = 25435
+20190115:09:32:17:204874 gprecoverseg:master:gpadmin-[INFO]:-   Recovery Source instance host        = master
+20190115:09:32:17:204874 gprecoverseg:master:gpadmin-[INFO]:-   Recovery Source instance address     = master
+20190115:09:32:17:204874 gprecoverseg:master:gpadmin-[INFO]:-   Recovery Source instance directory   = /home/gpadmin/workspace/gpdb/gpAux/gpdemo/datadirs/dbfast1/demoDataDir0
+20190115:09:32:17:204874 gprecoverseg:master:gpadmin-[INFO]:-   Recovery Source instance port        = 25432
+20190115:09:32:17:204874 gprecoverseg:master:gpadmin-[INFO]:-   Recovery Target                      = in-place
+20190115:09:32:17:204874 gprecoverseg:master:gpadmin-[INFO]:----------------------------------------------------------
+20190115:09:32:17:204874 gprecoverseg:master:gpadmin-[INFO]:-1 segment(s) to recover
+20190115:09:32:17:204874 gprecoverseg:master:gpadmin-[INFO]:-Ensuring 1 failed segment(s) are stopped
+ 
+20190115:09:32:17:204874 gprecoverseg:master:gpadmin-[INFO]:-Ensuring that shared memory is cleaned up for stopped segments
+20190115:09:32:18:204874 gprecoverseg:master:gpadmin-[INFO]:-Updating mirrors
+20190115:09:32:18:204874 gprecoverseg:master:gpadmin-[INFO]:-Running pg_rewind on required mirrors
+20190115:09:32:20:204874 gprecoverseg:master:gpadmin-[INFO]:-Starting mirrors
+20190115:09:32:20:204874 gprecoverseg:master:gpadmin-[INFO]:-era is None
+20190115:09:32:20:204874 gprecoverseg:master:gpadmin-[INFO]:-Commencing parallel segment instance startup, please wait...
+. 
+20190115:09:32:21:204874 gprecoverseg:master:gpadmin-[INFO]:-Process results...
+20190115:09:32:21:204874 gprecoverseg:master:gpadmin-[INFO]:-Triggering FTS probe
+20190115:09:32:21:204874 gprecoverseg:master:gpadmin-[INFO]:-******************************************************************
+20190115:09:32:21:204874 gprecoverseg:master:gpadmin-[INFO]:-Updating segments for streaming is completed.
+20190115:09:32:21:204874 gprecoverseg:master:gpadmin-[INFO]:-For segments updated successfully, streaming will continue in the background.
+20190115:09:32:21:204874 gprecoverseg:master:gpadmin-[INFO]:-Use  gpstate -s  to check the streaming progress.
+20190115:09:32:21:204874 gprecoverseg:master:gpadmin-[INFO]:-******************************************************************
+
+-- end_ignore
+(exited with code 0)
+!\retcode gprecoverseg -r;
+-- start_ignore
+20190115:09:32:21:205069 gprecoverseg:master:gpadmin-[INFO]:-Starting gprecoverseg with args: -r
+20190115:09:32:21:205069 gprecoverseg:master:gpadmin-[INFO]:-local Greenplum Version: 'postgres (Greenplum Database) 6.0.0-alpha.0+dev.15488.g9e6c513cb5 build dev-oss'
+20190115:09:32:22:205069 gprecoverseg:master:gpadmin-[INFO]:-master Greenplum Version: 'PostgreSQL 9.4.20 (Greenplum Database 6.0.0-alpha.0+dev.15488.g9e6c513cb5 build dev-oss) on x86_64-unknown-linux-gnu, compiled by gcc (GCC) 6.2.0, 64-bit compiled on Jan  9 2019 08:37:15 (with assert checking)'
+20190115:09:32:22:205069 gprecoverseg:master:gpadmin-[INFO]:-Obtaining Segment details from master...
+20190115:09:32:22:205069 gprecoverseg:master:gpadmin-[INFO]:-No segments are running in their non-preferred role and need to be rebalanced.
+
+-- end_ignore
+(exited with code 0)
+select role, preferred_role from gp_segment_configuration where content = 0;
+ role | preferred_role 
+------+----------------
+ p    | p              
+ m    | m              
+(2 rows)
+
+-- master prober is started on the primary segment
+0U: select gp_request_fts_probe_scan();
+ gp_request_fts_probe_scan 
+---------------------------
+ t                         
+(1 row)

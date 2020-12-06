@@ -1,0 +1,46 @@
+-- start_ignore
+! gpconfig -c gp_enable_master_autofailover -v on; ! gpstop -rai;
+20190111:08:13:48:159434 gpconfig:master:gpadmin-[INFO]:-completed successfully with parameters '-c gp_enable_master_autofailover -v on'
+20190111:08:13:48:159527 gpstop:master:gpadmin-[INFO]:-Starting gpstop with args: -rai
+20190111:08:13:48:159527 gpstop:master:gpadmin-[INFO]:-Gathering information and validating the environment...
+20190111:08:13:48:159527 gpstop:master:gpadmin-[INFO]:-Obtaining Greenplum Master catalog information
+20190111:08:13:48:159527 gpstop:master:gpadmin-[INFO]:-Obtaining Segment details from master...
+20190111:08:13:48:159527 gpstop:master:gpadmin-[INFO]:-Greenplum Version: 'postgres (Greenplum Database) 6.0.0-alpha.0+dev.15488.g9e6c513cb5 build dev-oss'
+20190111:08:13:48:159527 gpstop:master:gpadmin-[INFO]:-There are 0 connections to the database
+20190111:08:13:48:159527 gpstop:master:gpadmin-[INFO]:-Commencing Master instance shutdown with mode='immediate'
+20190111:08:13:48:159527 gpstop:master:gpadmin-[INFO]:-Master host=master
+20190111:08:13:48:159527 gpstop:master:gpadmin-[INFO]:-Commencing Master instance shutdown with mode=immediate
+20190111:08:13:48:159527 gpstop:master:gpadmin-[INFO]:-Master segment instance directory=/home/gpadmin/workspace/gpdb/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20190111:08:13:48:159527 gpstop:master:gpadmin-[INFO]:-Attempting forceful termination of any leftover master process
+20190111:08:13:48:159527 gpstop:master:gpadmin-[INFO]:-Terminating processes for segment /home/gpadmin/workspace/gpdb/gpAux/gpdemo/datadirs/qddir/demoDataDir-1
+20190111:08:13:49:159527 gpstop:master:gpadmin-[INFO]:-Stopping master standby host master mode=fast
+20190111:08:13:49:159527 gpstop:master:gpadmin-[INFO]:-Successfully shutdown standby process on master
+20190111:08:13:49:159527 gpstop:master:gpadmin-[INFO]:-Targeting dbid [2, 5, 3, 6, 4, 7] for shutdown
+20190111:08:13:49:159527 gpstop:master:gpadmin-[INFO]:-Commencing parallel primary segment instance shutdown, please wait...
+20190111:08:13:49:159527 gpstop:master:gpadmin-[INFO]:-0.00% of jobs completed
+20190111:08:13:50:159527 gpstop:master:gpadmin-[INFO]:-100.00% of jobs completed
+20190111:08:13:50:159527 gpstop:master:gpadmin-[INFO]:-Commencing parallel mirror segment instance shutdown, please wait...
+20190111:08:13:50:159527 gpstop:master:gpadmin-[INFO]:-0.00% of jobs completed
+20190111:08:13:51:159527 gpstop:master:gpadmin-[INFO]:-100.00% of jobs completed
+20190111:08:13:51:159527 gpstop:master:gpadmin-[INFO]:-----------------------------------------------------
+20190111:08:13:51:159527 gpstop:master:gpadmin-[INFO]:-   Segments stopped successfully      = 6
+20190111:08:13:51:159527 gpstop:master:gpadmin-[INFO]:-   Segments with errors during stop   = 0
+20190111:08:13:51:159527 gpstop:master:gpadmin-[INFO]:-----------------------------------------------------
+20190111:08:13:51:159527 gpstop:master:gpadmin-[INFO]:-Successfully shutdown 6 of 6 segment instances 
+20190111:08:13:51:159527 gpstop:master:gpadmin-[INFO]:-Database successfully shutdown with no errors reported
+20190111:08:13:51:159527 gpstop:master:gpadmin-[INFO]:-Cleaning up leftover gpmmon process
+20190111:08:13:51:159527 gpstop:master:gpadmin-[INFO]:-No leftover gpmmon process found
+20190111:08:13:51:159527 gpstop:master:gpadmin-[INFO]:-Cleaning up leftover gpsmon processes
+20190111:08:13:52:159527 gpstop:master:gpadmin-[INFO]:-No leftover gpsmon processes on some hosts. not attempting forceful termination on these hosts
+20190111:08:13:52:159527 gpstop:master:gpadmin-[INFO]:-Cleaning up leftover shared memory
+20190111:08:13:52:159527 gpstop:master:gpadmin-[INFO]:-Restarting System...
+
+-- end_ignore
+0U: do $$ begin /* in func */ for i in 1..10 loop /* in func */ if (select count(*)=2 from gp_segment_configuration) then /* in func */ return; /* in func */ end if; /* in func */ perform pg_sleep(1); /* in func */ end loop; /* in func */ end; /* in func */ $$;
+DO
+0U: select content, dbid, mode, status, role, preferred_role from gp_segment_configuration;
+ content | dbid | mode | status | role | preferred_role 
+---------+------+------+--------+------+----------------
+ -1      | 1    | s    | u      | p    | p              
+ -1      | 8    | s    | u      | m    | m              
+(2 rows)
