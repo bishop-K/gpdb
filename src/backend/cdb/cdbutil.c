@@ -52,6 +52,7 @@
 #include "cdb/cdbfts.h"
 #include "storage/ipc.h"
 #include "storage/proc.h"
+#include "storage/proc.h"
 #include "postmaster/fts.h"
 #include "catalog/namespace.h"
 #include "utils/gpexpand.h"
@@ -295,6 +296,11 @@ readGpSegConfigFromCatalog(int *total_dbs)
 		Assert(!isNull);
 		config->port = DatumGetInt32(attr);
 
+		/* port */
+		attr = heap_getattr(gp_seg_config_tuple, Anum_gp_segment_configuration_datadir, RelationGetDescr(gp_seg_config_rel), &isNull);
+		Assert(!isNull);
+		config->datadir = TextDatumGetCString(attr);
+
 		/* datadir is not dumped*/
 
 		idx++;
@@ -426,7 +432,7 @@ getCdbComponentInfo(void)
 	 * Validate that there exists at least one entry and one segment database
 	 * in the configuration
 	 */
-	if (component_databases->total_segment_dbs == 0)
+	if (component_databases->total_segment_dbs == 0 && IS_QUERY_DISPATCHER())
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_CARDINALITY_VIOLATION),
@@ -475,7 +481,7 @@ getCdbComponentInfo(void)
 			break;
 		}
 	}
-	if (i == component_databases->total_entry_dbs)
+	if (i == component_databases->total_entry_dbs && IS_QUERY_DISPATCHER())
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_EXCEPTION),
@@ -679,7 +685,9 @@ cdbcomponent_updateCdbComponents(void)
 	}
 	PG_CATCH();
 	{
-		FtsNotifyProber();
+		/* Trigger FTS if I'm not the FTS process */
+		if (FtsProbePID() == MyProc->pid)
+			FtsNotifyProber();
 
 		PG_RE_THROW();
 	}

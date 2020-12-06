@@ -1410,6 +1410,19 @@ class gpexpand:
                                      , port=seg.getSegmentPort()
                                      , dbname=database[0]
                                      )
+
+                """
+                As synchronous_standby_names is set to '*' on master, and new segments template
+                is created from master, but new mirrors are not started now, so set it to ''.
+                Otherwise, any dmls will be blocked.
+                It shouldn't be set back to '*', for FTS will do this later
+                """
+                conn = dbconn.connect(dburl, utility=True, encoding='UTF8')
+                dbconn.execSQL(conn, "commit")
+                dbconn.execSQL(conn, "alter system set synchronous_standby_names to ''")
+                dbconn.execSQL(conn, "select pg_reload_conf()")
+                conn.close()
+
                 name = "gpexpand execute segment cleanup commands. seg dbid = %s, command = %s" % (
                     seg.getSegmentDbId(), str(statements))
                 execSQLCmd = ExecuteSQLStatementsCommand(name=name

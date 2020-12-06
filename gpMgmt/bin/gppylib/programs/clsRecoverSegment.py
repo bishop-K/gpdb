@@ -297,7 +297,7 @@ class GpRecoverSegmentProgram:
                                    progressMode=self.getProgressMode())
 
     def findAndValidatePeersForFailedSegments(self, gpArray, failedSegments):
-        dbIdToPeerMap = gpArray.getDbIdToPeerMap()
+        dbIdToPeerMap = gpArray.getDbIdToPeerMap(True)
         peersForFailedSegments = [dbIdToPeerMap.get(seg.getSegmentDbId()) for seg in failedSegments]
 
         for i in range(len(failedSegments)):
@@ -317,7 +317,7 @@ class GpRecoverSegmentProgram:
         returns: a tuple (segments in change tracking disabled mode which are unable to recover, GpMirrorListToBuild object
                  containing information of segments which are able to recover)
         """
-        segments = gpArray.getSegDbList()
+        segments = gpArray.getDbList()
 
         failedSegments = [seg for seg in segments if seg.isSegmentDown()]
         peersForFailedSegments = self.findAndValidatePeersForFailedSegments(gpArray, failedSegments)
@@ -439,7 +439,7 @@ class GpRecoverSegmentProgram:
                              (', '.join(str(seg_id) for seg_id in segs_persistent_mirroring_disabled)))
 
     def getRecoveryActionsBasedOnOptions(self, gpEnv, gpArray):
-        if self.__options.rebalanceSegments:
+        if self.__options.rebalanceSegments or self.__options.rebalanceMaster:
             return GpSegmentRebalanceOperation(gpEnv, gpArray)
         elif self.__options.recoveryConfigFile is not None:
             return self.getRecoveryActionsFromConfigFile(gpArray)
@@ -471,7 +471,9 @@ class GpRecoverSegmentProgram:
             for h in self.__options.newRecoverHosts:
                 self.logger.info('Pool host for recovery     = %s' % h)
         elif self.__options.rebalanceSegments:
-            self.logger.info('Recovery type              = Rebalance')
+            self.logger.info('Recovery type              = Rebalance segments')
+        elif self.__options.rebalanceMaster:
+            self.logger.info('Recovery type              = Rebalance master')
         else:
             self.logger.info('Recovery type              = Standard')
 
@@ -482,6 +484,19 @@ class GpRecoverSegmentProgram:
                 tabLog = TableLogger()
                 self.logger.info('---------------------------------------------------------')
                 self.logger.info('Unbalanced segment %d of %d' % (i, total))
+                self.logger.info('---------------------------------------------------------')
+                programIoUtils.appendSegmentInfoForOutput("Unbalanced", gpArray, toRebalance, tabLog)
+                tabLog.info(["Balanced role", "= Primary" if toRebalance.preferred_role == 'p' else "= Mirror"])
+                tabLog.info(["Current role", "= Primary" if toRebalance.role == 'p' else "= Mirror"])
+                tabLog.outputTable()
+                i += 1
+        elif self.__options.rebalanceMaster:
+            i = 1
+            total = len(gpArray.get_unbalanced_master())
+            for toRebalance in gpArray.get_unbalanced_master():
+                tabLog = TableLogger()
+                self.logger.info('---------------------------------------------------------')
+                self.logger.info('Unbalanced master %d of %d' % (i, total))
                 self.logger.info('---------------------------------------------------------')
                 programIoUtils.appendSegmentInfoForOutput("Unbalanced", gpArray, toRebalance, tabLog)
                 tabLog.info(["Balanced role", "= Primary" if toRebalance.preferred_role == 'p' else "= Mirror"])
@@ -569,8 +584,10 @@ class GpRecoverSegmentProgram:
             optionCnt += 1
         if self.__options.rebalanceSegments:
             optionCnt += 1
+        if self.__options.rebalanceMaster:
+            optionCnt += 1
         if optionCnt > 1:
-            raise ProgramArgumentValidationException("Only one of -i, -p, and -r may be specified")
+            raise ProgramArgumentValidationException("Only one of -i, -p, -r and -R may be specified")
 
         faultProberInterface.getFaultProber().initializeProber(gpEnv.getMasterPort())
 
@@ -605,6 +622,15 @@ class GpRecoverSegmentProgram:
             if len(gpArray.get_synchronized_segdbs()) != len(gpArray.getSegDbList()):
                 raise Exception(
                     "Some segments are not yet synchronized.  All segments must be synchronized to rebalance.")
+
+        if self.__options.rebalanceMaster:
+            if len(gpArray.get_invalid_master()) > 0:
+                raise Exception("Down master/standby still exist.  Master and standby must be up to rebalance.")
+            if len(gpArray.get_synchronized_master()) != 2:
+                raise Exception(
+                    "Master or standby are not yet synchronized.  Master and standby must be synchronized to rebalance.")
+            if not gpArray.is_master_prober_enabled():
+                raise Exception("Need to enable gp_enable_master_autofailover first.")
 
         # retain list of hosts that were existing in the system prior to getRecoverActions...
         # this will be needed for later calculations that determine whether
@@ -644,7 +670,32 @@ class GpRecoverSegmentProgram:
                 self.logger.info("segments in sync.")
                 self.logger.info("Use gpstate -e to check the resynchronization progress.")
                 self.logger.info("******************************************************************")
+        elif self.__options.rebalanceMaster:
+            assert (isinstance(mirrorBuilder, GpSegmentRebalanceOperation))
 
+            # Make sure we have work to do
+            if len(gpArray.get_unbalanced_master()) == 0:
+                self.logger.info("Master and standby are running in their non-preferred role and need to be rebalanced.")
+            else:
+                self.displayRecovery(mirrorBuilder, gpArray)
+
+                if self.__options.interactive:
+                    self.logger.warn("This operation will cancel queries that are currently executing.")
+                    self.logger.warn("Connections to the database however will not be interrupted.")
+                    if not userinput.ask_yesno(None, "\nContinue with segment rebalance procedure", 'N'):
+                        raise UserAbortedException()
+
+                fullRebalanceDone = mirrorBuilder.rebalanceMaster()
+                self.logger.info("******************************************************************")
+                if fullRebalanceDone:
+                    self.logger.info("The rebalance operation has completed successfully.")
+                else:
+                    self.logger.info("The rebalance operation has completed with WARNINGS."
+                                     " Please review the output in the gprecoverseg log.")
+                self.logger.info("There is a resynchronization running in the background to bring")
+                self.logger.info("master and standby in sync.")
+                self.logger.info("Use gpstate -e to check the resynchronization progress.")
+                self.logger.info("******************************************************************")
         elif len(mirrorBuilder.getMirrorsToBuild()) == 0:
             self.logger.info('No segments to recover')
         else:
@@ -683,7 +734,8 @@ class GpRecoverSegmentProgram:
 
     def trigger_fts_probe(self, port=0):
         self.logger.info('Triggering FTS probe')
-        with dbconn.connect(dbconn.DbURL(port=port)) as conn:
+        master = gpArray.master
+        with dbconn.connect(dbconn.DbURL(hostname=master.getSegmentHostName(), port=master.getSegmentPort())) as conn:
             res = dbconn.execSQL(conn, "SELECT gp_request_fts_probe_scan()")
         return res.fetchall()
 
@@ -773,6 +825,8 @@ class GpRecoverSegmentProgram:
                          help="Max # of workers to use for building recovery segments.  [default: %default]")
         addTo.add_option("-r", None, default=False, action='store_true',
                          dest='rebalanceSegments', help='Rebalance synchronized segments.')
+        addTo.add_option("-R", None, default=False, action='store_true',
+                         dest='rebalanceMaster', help='Rebalance synchronized master.')
         addTo.add_option('', '--hba-hostnames', action='store_true', dest='hba_hostnames',
                          help='use hostnames instead of CIDR in pg_hba.conf')
 

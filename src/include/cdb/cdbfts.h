@@ -40,15 +40,22 @@ typedef struct FtsProbeInfo
 } FtsProbeInfo;
 
 #define FTS_MAX_TRANSIENT_STATE 100
+#define MASTER_PROBER_MESSAGE_MAXLEN 1024
 
 typedef struct FtsControlBlock
 {
-	LWLockId		ControlLock;
-	FtsProbeInfo	fts_probe_info;
-	volatile bool	pm_launch_walreceiver;
+	volatile bool		pm_launch_walreceiver;
+	LWLockId			ControlLock;
+	FtsProbeInfo		fts_probe_info;
+
+	/* for master prober only */
+	bool				startMasterProber;
+	int 				masterProberDBID;
+	char				masterProberMessage[MASTER_PROBER_MESSAGE_MAXLEN];
 }	FtsControlBlock;
 
 extern volatile FtsProbeInfo *ftsProbeInfo;
+extern FtsControlBlock *shmFtsControl;
 
 extern int	FtsShmemSize(void);
 extern void FtsShmemInit(void);

@@ -1579,7 +1579,7 @@ FORCE_FTS_PROBE () {
     # loop on gp_segment_configuration to make sure primary/mirror pairs are up and in sync
     for i in {1..60}; do
         if [ $i == 60 ]; then
-            $PSQL -p $GP_PORT -d "$DEFAULTDB" -A -t -c "select * from gp_segment_configuration where (mode = 'n' or status = 'd') and content != -1;" >> $LOG_FILE 2>&1
+            $PSQL -p $GP_PORT -d "$DEFAULTDB" -A -t -c "select * from gp_segment_configuration where (mode = 'n' or status = 'd');" >> $LOG_FILE 2>&1
             $PSQL -p $GP_PORT -d "$DEFAULTDB" -A -t -c "select * from gp_stat_replication where sync_error != 'none' or sync_state != 'sync';" >> $LOG_FILE 2>&1
             LOG_MSG "[WARN]:" 1
             LOG_MSG "[WARN]:-Failed to start Greenplum instance; please review gpinitsystem log to determine failure." 1
@@ -1587,7 +1587,12 @@ FORCE_FTS_PROBE () {
             break;
         fi
 
-        RESULT=$( $PSQL -p $GP_PORT -d "$DEFAULTDB" -A -t -c "select count(*) > 0 from gp_segment_configuration where (mode = 'n' or status = 'd') and content != -1;" )
+        if [ $1 -eq 0 ]; then
+            RESULT=$( $PSQL -p $GP_PORT -d "$DEFAULTDB" -A -t -c "select count(*) > 0 from gp_segment_configuration where (mode = 'n' or status = 'd') and content != -1;" )
+        else
+            RESULT=$( $PSQL -p $GP_PORT -d "$DEFAULTDB" -A -t -c "select count(*) > 0 from gp_segment_configuration where (mode = 'n' or status = 'd') and content = -1;" )
+        fi
+
         if [ x"$RESULT" == x"f" ]; then
             break
         fi
@@ -2014,11 +2019,12 @@ SET_GP_USER_PW
 if [ $MIRRORING -ne 0 ]; then
     REGISTER_MIRRORS
     CREATE_SEGMENT IS_MIRROR
-    FORCE_FTS_PROBE
+    FORCE_FTS_PROBE 0
 fi
 
 if [ x"" != x"$STANDBY_HOSTNAME" ];then
 	CREATE_STANDBY_QD
+    FORCE_FTS_PROBE 1
 fi
 
 SCAN_LOG

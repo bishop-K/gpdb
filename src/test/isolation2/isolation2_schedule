@@ -12,6 +12,13 @@ test: select_dropped_table
 # test update hash col under utility mode
 test: update_hash_col_utilitymode
 
+# Tests for master prober
+test: segwalrep/master_prober_test_setup
+test: segwalrep/fts_unblock_master
+test: segwalrep/standby_promotion
+test: segwalrep/master_prober_selection
+test: segwalrep/master_prober_test_terminate
+
 # Tests for crash recovery
 test: uao_crash_compaction_column
 test: uao_crash_compaction_row

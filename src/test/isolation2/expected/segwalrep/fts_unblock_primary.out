@@ -7,7 +7,7 @@ CREATE
 select content, role, preferred_role, mode, status from gp_segment_configuration;
  content | role | preferred_role | mode | status 
 ---------+------+----------------+------+--------
- -1      | p    | p              | n    | u      
+ -1      | p    | p              | s    | u      
  -1      | m    | m              | s    | u      
  2       | p    | p              | s    | u      
  2       | m    | m              | s    | u      

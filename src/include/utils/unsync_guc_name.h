@@ -527,3 +527,4 @@
 		"xmloption",
 		"zero_damaged_pages",
 		"max_slot_wal_keep_size",
+		"gp_enable_master_autofailover",

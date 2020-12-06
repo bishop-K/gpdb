@@ -51,6 +51,8 @@ expectSendFtsResponse(const char *expectedMessageType, const FtsResponse *expect
 	expect_value(pq_sendint, i, expectedResponse->IsRoleMirror);
 	expect_value(pq_sendint, i, 1);
 	expect_value(pq_sendint, i, expectedResponse->RequestRetry);
+	expect_value(pq_sendint, i, 1);
+	expect_value(pq_sendint, i, expectedResponse->MasterProberStarted);
 
 	will_be_called_count(pq_sendint, -1);
 
@@ -74,6 +76,7 @@ test_HandleFtsWalRepProbePrimary(void **state)
 	mockresponse.IsSyncRepEnabled = false;
 	mockresponse.IsRoleMirror = false;
 	mockresponse.RequestRetry = false;
+	mockresponse.MasterProberStarted = false;
 
 	expect_any(GetMirrorStatus, response);
 	will_assign_memory(GetMirrorStatus, response, &mockresponse, sizeof(FtsResponse));
@@ -85,6 +88,7 @@ test_HandleFtsWalRepProbePrimary(void **state)
 	mockresponse.IsSyncRepEnabled = true;
 	expectSendFtsResponse(FTS_MSG_PROBE, &mockresponse);
 
+	*shmFtsProbePID = 0;
 	HandleFtsWalRepProbe();
 }
 
@@ -98,6 +102,7 @@ test_HandleFtsWalRepSyncRepOff(void **state)
 	/* unblock primary if FTS requests it */
 	mockresponse.IsSyncRepEnabled = false;
 	mockresponse.RequestRetry = false;
+	mockresponse.MasterProberStarted = false;
 
 	expect_any(GetMirrorStatus, response);
 	will_assign_memory(GetMirrorStatus, response, &mockresponse, sizeof(FtsResponse));
@@ -120,6 +125,7 @@ test_HandleFtsWalRepProbeMirror(void **state)
 	mockresponse.IsSyncRepEnabled = false;
 	mockresponse.IsRoleMirror     = false;
 	mockresponse.RequestRetry     = false;
+	mockresponse.MasterProberStarted = false;
 
 	/* expect the IsRoleMirror changed to reflect the global variable */
 	am_mirror = true;
@@ -147,6 +153,7 @@ test_HandleFtsWalRepPromoteMirror(void **state)
 	ReplicationSlotCtlData repCtl;
 	ReplicationSlotCtl = &repCtl;
 	max_replication_slots = 1;
+	char query[32];
 	am_mirror = true;
 
 	will_return(GetCurrentDBState, DB_IN_ARCHIVE_RECOVERY);
@@ -159,6 +166,7 @@ test_HandleFtsWalRepPromoteMirror(void **state)
 	mockresponse.IsSyncRepEnabled = false;
 	mockresponse.IsRoleMirror     = am_mirror;
 	mockresponse.RequestRetry     = false;
+	mockresponse.MasterProberStarted = false;
 
 	expect_value(LWLockAcquire, l, ReplicationSlotControlLock);
 	expect_value(LWLockAcquire, mode, LW_SHARED);
@@ -176,12 +184,37 @@ test_HandleFtsWalRepPromoteMirror(void **state)
 	/* expect SignalPromote() */
 	expectSendFtsResponse(FTS_MSG_PROMOTE, &mockresponse);
 
-	HandleFtsWalRepPromote();
+	snprintf(query, 32, "%s:0", FTS_MSG_PROMOTE);
+	HandleFtsWalRepPromote(query);
+}
+
+void
+test_HandleFtsWalRepDeprecatedMasterProberPromoteStandby(void **state)
+{
+	char query[32];
+	am_mirror = true;
+
+	FtsResponse mockresponse;
+	mockresponse.IsMirrorUp       = false;
+	mockresponse.IsInSync         = false;
+	mockresponse.IsSyncRepEnabled = false;
+	mockresponse.IsRoleMirror     = am_mirror;
+	mockresponse.RequestRetry     = false;
+	mockresponse.MasterProberStarted = false;
+
+	/* expect SignalPromote() */
+	expectSendFtsResponse(FTS_MSG_PROMOTE, &mockresponse);
+
+	snprintf(query, 32, "%s:3", FTS_MSG_PROMOTE);
+	shmFtsControl->masterProberDBID = 2;
+	GpIdentity.segindex = MASTER_CONTENT_ID;
+	HandleFtsWalRepPromote(query);
 }
 
 static void
 test_HandleFtsWalRepPromotePrimary(void **state)
 {
+	char query[32];
 	am_mirror = false;
 
 	will_return(GetCurrentDBState, DB_IN_PRODUCTION);
@@ -192,11 +225,64 @@ test_HandleFtsWalRepPromotePrimary(void **state)
 	mockresponse.IsSyncRepEnabled = false;
 	mockresponse.IsRoleMirror     = false;
 	mockresponse.RequestRetry     = false;
+	mockresponse.MasterProberStarted = false;
 
 	/* expect no SignalPromote() */
 	expectSendFtsResponse(FTS_MSG_PROMOTE, &mockresponse);
 
-	HandleFtsWalRepPromote();
+	snprintf(query, 32, "%s:0", FTS_MSG_PROMOTE);
+	shmFtsControl->masterProberDBID = 0;
+	HandleFtsWalRepPromote(query);
+}
+
+void
+test_HandleFtsWalRepNewMasterProber(void **state)
+{
+	char query[32];
+	int newMasterProber = 5;
+
+	FtsResponse mockresponse;
+	mockresponse.IsMirrorUp       = false;
+	mockresponse.IsInSync         = false;
+	mockresponse.IsSyncRepEnabled = false;
+	mockresponse.IsRoleMirror     = false;
+	mockresponse.RequestRetry     = false;
+	mockresponse.MasterProberStarted = false;
+
+	expectSendFtsResponse(FTS_MSG_NEW_MASTER_PROBER, &mockresponse);
+
+	snprintf(query, 32, "%s:%d", FTS_MSG_NEW_MASTER_PROBER, newMasterProber);
+	HandleFtsWalRepNewMasterProber(query);
+	assert_int_equal(newMasterProber, shmFtsControl->masterProberDBID);
+}
+
+void
+test_HandleFtsWalRepStartMasterProber(void **state)
+{
+	char query[1024];
+
+	FtsResponse mockresponse;
+	mockresponse.IsMirrorUp       = false;
+	mockresponse.IsInSync         = false;
+	mockresponse.IsSyncRepEnabled = false;
+	mockresponse.IsRoleMirror     = false;
+	mockresponse.RequestRetry     = false;
+	mockresponse.MasterProberStarted = false;
+
+	expectSendFtsResponse(FTS_MSG_START_MASTER_PROBER, &mockresponse);
+
+	snprintf(query, 1024, FTS_MSG_START_MASTER_PROBER_FMT,
+			 0,
+			 2, 'p', 'p', "master_host", "master_address", 15432,
+			 3, 'm', 'm', "standby_host", "standby_address", 16432);
+	IsUnderPostmaster = false;
+
+	expect_value(SendPostmasterSignal, reason, PMSIGNAL_START_MASTER_PROBER);
+	will_be_called(SendPostmasterSignal);
+
+	HandleFtsWalRepStartMasterProber(query);
+	assert_true(shmFtsControl->startMasterProber);
+	assert_string_equal(shmFtsControl->masterProberMessage, query);
 }
 
 int
@@ -209,9 +295,13 @@ main(int argc, char* argv[])
 		unit_test(test_HandleFtsWalRepSyncRepOff),
 		unit_test(test_HandleFtsWalRepProbeMirror),
 		unit_test(test_HandleFtsWalRepPromoteMirror),
-		unit_test(test_HandleFtsWalRepPromotePrimary)
+		unit_test(test_HandleFtsWalRepDeprecatedMasterProberPromoteStandby),
+		unit_test(test_HandleFtsWalRepPromotePrimary),
+		unit_test(test_HandleFtsWalRepNewMasterProber),
+		unit_test(test_HandleFtsWalRepStartMasterProber),
 	};
 
 	MemoryContextInit();
+	shmFtsControl = (FtsControlBlock*) palloc(sizeof(FtsControlBlock));
 	return run_tests(tests);
 }

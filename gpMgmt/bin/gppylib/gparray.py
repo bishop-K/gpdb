@@ -122,7 +122,7 @@ class Segment:
             self.role,
             self.preferred_role,
             self.mode,
-            self.status
+            self.status,
             )
 
     #
@@ -271,6 +271,9 @@ class Segment:
     def isSegmentMirror(self, current_role=False):
         role = self.role if current_role else self.preferred_role
         return self.content >= 0 and role == ROLE_MIRROR
+
+    def isMasterProber(self):
+        return self.content == 0 and self.role == ROLE_PRIMARY
 
     def isSegmentUp(self):
         return self.status == STATUS_UP
@@ -1081,12 +1084,13 @@ class GpArray:
         return hostList
 
 
-    def getDbIdToPeerMap(self):
+    def getDbIdToPeerMap(self, includeMasters=False):
         """
         Returns a map that maps a dbid to the peer segment for that dbid
         """
         contentIdToSegments = {}
-        for seg in self.getSegDbList():
+        instances = self.getDbList() if includeMasters else self.getSegDbList()
+        for seg in instances:
             arr = contentIdToSegments.get(seg.getSegmentContentId())
             if arr is None:
                 arr = []
@@ -1195,9 +1199,51 @@ class GpArray:
         return dbs
 
     # --------------------------------------------------------------------
+    def get_invalid_master(self):
+        dbs = []
+        if not self.master.valid:
+            dbs.append(self.master)
+        if self.standbyMaster and not self.standbyMaster.valid:
+            dbs.append(self.standbyMaster)
+        return dbs
+
+    # --------------------------------------------------------------------
+    def get_synchronized_master(self):
+        dbs = []
+        if self.master.mode == MODE_SYNCHRONIZED:
+            dbs.append(self.master)
+        if self.standbyMaster and self.standbyMaster.mode == MODE_SYNCHRONIZED:
+            dbs.append(self.standbyMaster)
+        return dbs
+
+    # --------------------------------------------------------------------
+    def get_unbalanced_master(self):
+        dbs=[]
+        if self.master.role != self.master.preferred_role:
+            dbs.append(self.master)
+        if self.standbyMaster and self.standbyMaster.role != self.standbyMaster.preferred_role:
+            dbs.append(self.standbyMaster)
+        return dbs
+
+    # --------------------------------------------------------------------
     def get_unbalanced_primary_segdbs(self):
         dbs = [seg for seg in self.get_unbalanced_segdbs() if seg.role == ROLE_PRIMARY]
         return dbs
+
+    # --------------------------------------------------------------------
+    def get_master_prober(self):
+        for db in self.getSegDbList(False):
+            if db.isMasterProber():
+                return db
+
+        return None
+
+    # --------------------------------------------------------------------
+    def is_master_prober_enabled(self):
+        dburl = dbconn.DbURL(hostname=self.master.getSegmentHostName(), port=self.master.getSegmentPort())
+        with dbconn.connect(dburl) as conn:
+            res = dbconn.execSQL(conn, "SHOW gp_enable_master_autofailover").fetchone()[0]
+            return res == 'on'
 
     # --------------------------------------------------------------------
     def get_valid_segdbs(self):

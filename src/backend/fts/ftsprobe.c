@@ -518,6 +518,7 @@ ftsSend(fts_context *context)
 	fts_segment_info *ftsInfo;
 	const char *message_type;
 	char message[FTS_MSG_MAX_LEN];
+	char probeStr[30];
 	int i;
 
 	for (i = 0; i < context->num_pairs; i++)
@@ -548,7 +549,10 @@ ftsSend(fts_context *context)
 				else if (ftsInfo->state == FTS_SYNCREP_OFF_SEGMENT)
 					message_type = FTS_MSG_SYNCREP_OFF;
 				else
-					message_type = FTS_MSG_PROMOTE;
+				{
+					snprintf(probeStr, sizeof(probeStr), FTS_MSG_PROMOTE_FMT, GpIdentity.dbid);
+					message_type = probeStr;
+				}
 
 				snprintf(message, FTS_MSG_MAX_LEN, FTS_MSG_FORMAT,
 						 message_type,
@@ -612,10 +616,13 @@ probeRecordResponse(fts_segment_info *ftsInfo, PGresult *result)
 	ftsInfo->result.retryRequested = *PQgetvalue(result, 0,
 			Anum_fts_message_response_request_retry);
 
+	ftsInfo->result.masterProberStarted = *PQgetvalue(result, 0,
+			Anum_fts_message_response_master_prober_started);
+
 	elogif(gp_log_fts >= GPVARS_VERBOSITY_DEBUG, LOG,
 		   "FTS: segment (content=%d, dbid=%d, role=%c) reported "
 		   "isMirrorUp %d, isInSync %d, isSyncRepEnabled %d, "
-		   "isRoleMirror %d, and retryRequested %d to the prober.",
+		   "isRoleMirror %d, retryRequested %d and masterProberStarted %d to the prober.",
 		   ftsInfo->primary_cdbinfo->config->segindex,
 		   ftsInfo->primary_cdbinfo->config->dbid,
 		   ftsInfo->primary_cdbinfo->config->role,
@@ -623,7 +630,8 @@ probeRecordResponse(fts_segment_info *ftsInfo, PGresult *result)
 		   ftsInfo->result.isInSync,
 		   ftsInfo->result.isSyncRepEnabled,
 		   ftsInfo->result.isRoleMirror,
-		   ftsInfo->result.retryRequested);
+		   ftsInfo->result.retryRequested,
+		   ftsInfo->result.masterProberStarted);
 }
 
 /*
@@ -1012,6 +1020,7 @@ processResponse(fts_context *context)
 						 * been marked down by updateConfiguration().
 						 */
 						AssertImply(SEGMENT_IS_ALIVE(mirror), is_updated);
+
 						/*
 						 * Now that the configuration is updated, FTS must notify
 						 * the primaries to unblock commits by sending syncrep off
@@ -1161,7 +1170,6 @@ processResponse(fts_context *context)
 				break;
 		}
 		/* Close connection and reset result for next message, if any. */
-		memset(&ftsInfo->result, 0, sizeof(fts_result));
 		PQfinish(ftsInfo->conn);
 		ftsInfo->conn = NULL;
 		ftsInfo->poll_events = ftsInfo->poll_revents = 0;
@@ -1190,22 +1198,45 @@ FtsIsSegmentAlive(CdbComponentDatabaseInfo *segInfo)
  * cdbs.
  */
 static void
-FtsWalRepInitProbeContext(CdbComponentDatabases *cdbs, fts_context *context)
+FtsWalRepInitProbeContext(CdbComponentDatabases *cdbs, fts_context *context, bool masterProber)
 {
-	context->num_pairs = cdbs->total_segments;
+	int array_size = 0;
+	if (masterProber)
+	{
+		Assert(cdbs->total_entry_dbs == 2);
+		array_size = cdbs->total_entry_dbs;
+		context->num_pairs = 1;
+	}
+	else
+	{
+		array_size = cdbs->total_segment_dbs;
+		context->num_pairs = cdbs->total_segments;
+	}
 	context->perSegInfos = (fts_segment_info *) palloc0(
 		context->num_pairs * sizeof(fts_segment_info));
 
 	int fts_index = 0;
 	int cdb_index = 0;
-	for(; cdb_index < cdbs->total_segment_dbs; cdb_index++)
+	for(; cdb_index < array_size; cdb_index++)
 	{
-		CdbComponentDatabaseInfo *primary = &(cdbs->segment_db_info[cdb_index]);
-		if (!SEGMENT_IS_ACTIVE_PRIMARY(primary))
-			continue;
-		CdbComponentDatabaseInfo *mirror = FtsGetPeerSegment(cdbs,
-															 primary->config->segindex,
-															 primary->config->dbid);
+		CdbComponentDatabaseInfo *primary = NULL;
+		CdbComponentDatabaseInfo *mirror = NULL;
+		if (masterProber)
+		{
+			/* entry_db_info is sorted by isprimary */
+			primary = &(cdbs->entry_db_info[0]);
+			mirror = &(cdbs->entry_db_info[1]);
+			if (cdb_index > 0)
+				continue;
+		}
+		else
+		{
+			primary = &(cdbs->segment_db_info[cdb_index]);
+
+			if (!SEGMENT_IS_ACTIVE_PRIMARY(primary))
+				continue;
+			mirror = FtsGetPeerSegment(cdbs, primary->config->segindex, primary->config->dbid);
+		}
 		/*
 		 * If there is no mirror under this primary, no need to probe.
 		 */
@@ -1231,6 +1262,7 @@ FtsWalRepInitProbeContext(CdbComponentDatabases *cdbs, fts_context *context)
 		ftsInfo->result.isSyncRepEnabled = false;
 		ftsInfo->result.retryRequested = false;
 		ftsInfo->result.isRoleMirror = false;
+		ftsInfo->result.masterProberStarted = false;
 		ftsInfo->result.dbid = primary->config->dbid;
 		ftsInfo->state = FTS_PROBE_SEGMENT;
 		ftsInfo->recovery_making_progress = false;
@@ -1251,13 +1283,16 @@ InitPollFds(size_t size)
 }
 
 bool
-FtsWalRepMessageSegments(CdbComponentDatabases *cdbs)
+FtsWalRepMessageSegments(CdbComponentDatabases *cdbs,
+						 bool amMasterProber,
+						 bool *masterProberStarted)
 {
 	bool is_updated = false;
 	fts_context context;
+	int i;
 
-	FtsWalRepInitProbeContext(cdbs, &context);
-	InitPollFds(cdbs->total_segments);
+	FtsWalRepInitProbeContext(cdbs, &context, amMasterProber);
+	InitPollFds(context.num_pairs);
 
 	while (!allDone(&context) && FtsIsActive())
 	{
@@ -1268,7 +1303,10 @@ FtsWalRepMessageSegments(CdbComponentDatabases *cdbs)
 		processRetry(&context);
 		is_updated |= processResponse(&context);
 	}
-	int i;
+
+	if (!amMasterProber && masterProberStarted)
+		*masterProberStarted = context.perSegInfos[0].result.masterProberStarted;
+
 	if (!FtsIsActive())
 	{
 		for (i = 0; i < context.num_pairs; i++)
@@ -1301,6 +1339,43 @@ FtsWalRepMessageSegments(CdbComponentDatabases *cdbs)
 	pfree(context.perSegInfos);
 	pfree(PollFds);
 	return is_updated;
+}
+
+bool
+FtsWalRepMessageOneSegment(CdbComponentDatabaseInfo *cdb, const char *message)
+{
+	PGconn *conn;
+	PGresult *res;
+	char conninfo[1024];
+	int ntuples;
+	int nfields;
+
+	snprintf(conninfo, 1024, "host=%s port=%d gpconntype=%s",
+			 cdb->config->hostip, cdb->config->port, GPCONN_TYPE_FTS);
+	conn = PQconnectdb(conninfo);
+	if (PQstatus(conn) != CONNECTION_OK)
+		return false;
+
+	res = PQexec(conn, message);
+	if (!res || PQresultStatus(res) != PGRES_TUPLES_OK)
+	{
+		PQfinish(conn);
+		return false;
+	}
+
+	ntuples = PQntuples(res);
+	nfields = PQnfields(res);
+	if (nfields != Natts_fts_message_response ||
+		ntuples != FTS_MESSAGE_RESPONSE_NTUPLES)
+	{
+		PQclear(res);
+		PQfinish(conn);
+		return false;
+	}
+
+	PQfinish(conn);
+	PQclear(res);
+	return true;
 }
 
 /* EOF */

@@ -2358,10 +2358,6 @@ retry1:
 				am_mirror = IsRoleMirror();
 				if (strcmp(valptr, GPCONN_TYPE_FTS) == 0)
 				{
-					if (IS_QUERY_DISPATCHER())
-						ereport(FATAL,
-								(errcode(ERRCODE_PROTOCOL_VIOLATION),
-								 errmsg("cannot handle FTS connection on master")));
 					am_ftshandler = true;
 
 #ifdef FAULT_INJECTOR
@@ -5481,6 +5477,11 @@ sigusr1_handler(SIGNAL_ARGS)
 		StartWorkerNeeded = true;
 	}
 
+	/* start master prober */
+	if (CheckPostmasterSignal(PMSIGNAL_START_MASTER_PROBER))
+	{
+		StartWorkerNeeded = true;
+	}
 	/*
 	 * RECOVERY_STARTED and BEGIN_HOT_STANDBY signals are ignored in
 	 * unexpected states. If the startup process quickly starts up, completes

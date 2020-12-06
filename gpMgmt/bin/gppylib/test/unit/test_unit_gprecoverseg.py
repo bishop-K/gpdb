@@ -23,6 +23,7 @@ class Options:
         self.recoveryConfigFile = None
         self.outputSpareDataDirectoryFile = None
         self.rebalanceSegments = None
+        self.rebalanceMaster = None
 
         self.outputSampleConfigFile = None
         self.parallelDegree = 1

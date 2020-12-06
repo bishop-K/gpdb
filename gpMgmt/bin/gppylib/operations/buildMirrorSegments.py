@@ -3,6 +3,7 @@ import os
 import pipes
 import signal
 import time
+import stat
 
 from gppylib.mainUtils import *
 
@@ -68,12 +69,9 @@ class GpMirrorToBuild:
         if failedSegment is None and failoverSegment is None:
             raise Exception("No mirror passed to GpMirrorToBuild")
 
-        if not liveSegment.isSegmentQE():
-            raise ExceptionNoStackTraceNeeded("Segment to recover from for content %s is not a correct segment "
-                                              "(it is a master or standby master)" % liveSegment.getSegmentContentId())
-        if not liveSegment.isSegmentPrimary(True):
+        if not liveSegment.isSegmentPrimary(True) and not liveSegment.isSegmentMaster(True):
             raise ExceptionNoStackTraceNeeded(
-                "Segment to recover from for content %s is not a primary" % liveSegment.getSegmentContentId())
+                "Segment to recover from for content %s is not a primary or master" % liveSegment.getSegmentContentId())
         if not liveSegment.isSegmentUp():
             raise ExceptionNoStackTraceNeeded(
                 "Primary segment is not up for content %s" % liveSegment.getSegmentContentId())
@@ -366,6 +364,11 @@ class GpMirrorListToBuild:
             conn.commit()
             conn.close()
 
+            # change gp_era mode to 0600
+            gp_era_file = os.path.join(rewindSeg.targetSegment.getSegmentDataDirectory(), 'pg_log', 'gp_era')
+            if os.path.exists(gp_era_file):
+                os.chmod(gp_era_file, stat.S_IRUSR | stat.S_IWUSR)
+
             # If the postmaster.pid still exists and another process
             # is actively using that pid, pg_rewind will fail when it
             # tries to start the failed segment in single-user
@@ -394,12 +397,29 @@ class GpMirrorListToBuild:
 
         for cmd in self.__pool.getCompletedItems():
             self.__logger.debug('pg_rewind results: %s' % cmd.results)
+
+            dbid = int(cmd.name.split(':')[1].strip())
+            targetSegment = rewindInfo[dbid].targetSegment
+
+            # restore gp_era mode to 0400
+            gp_era_file = os.path.join(targetSegment.getSegmentDataDirectory(), 'pg_log', 'gp_era')
+            if os.path.exists(gp_era_file):
+                os.chmod(gp_era_file, stat.S_IRUSR)
+
             if not cmd.was_successful():
-                dbid = int(cmd.name.split(':')[1].strip())
                 self.__logger.debug("%s failed" % cmd.name)
                 self.__logger.warning(cmd.get_stdout())
                 self.__logger.warning("Incremental recovery failed for dbid %d. You must use gprecoverseg -F to recover the segment." % dbid)
-                rewindFailedSegments.append(rewindInfo[dbid].targetSegment)
+                rewindFailedSegments.append(targetSegment)
+            else:
+                # postgresql.conf is overwritten, set the correct 'port'
+                cmd = gp.GpAddConfigScript('update config',
+                                           targetSegment.getSegmentDataDirectory(),
+                                           'port',
+                                           value=str(targetSegment.getSegmentPort()),
+                                           ctxt=gp.REMOTE,
+                                           remoteHost=targetSegment.getSegmentHostName())
+                cmd.run(validateAfter=True)
 
         self.__pool.empty_completed_items()
 
@@ -833,9 +853,30 @@ class GpMirrorListToBuild:
         self.__runWaitAndCheckWorkerPoolForErrorsAndClear(cmds, "writing updated gpid files")
 
     def __startAll(self, gpEnv, gpArray, segments):
-
         # the newly started segments should belong to the current era
         era = read_era(gpEnv.getMasterDataDir(), logger=self.__logger)
+
+        standby = None
+        for seg in segments:
+            if seg.isSegmentStandby(True):
+                standby = seg
+                segments.remove(seg)
+                break
+
+        start_standby_successfull = True
+        if standby is not None:
+            cmd = gp.GpStandbyStart.remote('start standby master',
+                                        standby.hostname,
+                                        standby.datadir,
+                                        standby.port,
+                                        gpArray.getNumSegmentContents(),
+                                        standby.dbid,
+                                        era=era)
+            logger.debug("Starting standby: %s" % cmd)
+            logger.debug("Starting standby master results: %s" % cmd.get_results())
+            start_standby_successfull = cmd.get_results().rc == 0
+            if not start_standby_successfull:
+                self.__logger.warn("Failed to start standby.  The fault prober will shortly mark it as down.")
 
         segmentStartResult = self.__createStartSegmentsOp(gpEnv).startSegments(gpArray, segments,
                                                                                startSegments.START_AS_MIRRORLESS,
@@ -848,7 +889,7 @@ class GpMirrorListToBuild:
                 "Failed to start segment.  The fault prober will shortly mark it as down. Segment: %s: REASON: %s" % (
                 failedSeg, failureReason))
 
-        return start_all_successfull
+        return start_all_successfull and start_standby_successfull
 
 class GpCleanupSegmentDirectoryDirective:
     def __init__(self, segment):

@@ -17,6 +17,10 @@
 #include <unistd.h>
 #include <replication/slot.h>
 
+#include "libpq-fe.h"
+#include "libpq-int.h"
+#include "cdb/cdbvars.h"
+#include "cdb/cdbfts.h"
 #include "access/xlog.h"
 #include "cdb/cdbvars.h"
 #include "libpq/pqformat.h"
@@ -27,6 +31,8 @@
 #include "utils/guc.h"
 #include "replication/gp_replication.h"
 #include "storage/fd.h"
+#include "storage/pmsignal.h"
+
 
 #define FTS_PROBE_FILE_NAME "fts_probe_file.bak"
 #define FTS_PROBE_MAGIC_STRING "FtS PrObEr MaGiC StRiNg, pRoBiNg cHeCk......."
@@ -217,6 +223,14 @@ SendFtsResponse(FtsResponse *response, const char *messagetype)
 	pq_sendint(&buf, -1, 4);		/* typmod */
 	pq_sendint(&buf, 0, 2);		/* format code */
 
+	pq_sendstring(&buf, "master_prober_started");
+	pq_sendint(&buf, 0, 4);		/* table oid */
+	pq_sendint(&buf, Anum_fts_message_response_master_prober_started, 2);		/* attnum */
+	pq_sendint(&buf, BOOLOID, 4);		/* type oid */
+	pq_sendint(&buf, 1, 2);	/* typlen */
+	pq_sendint(&buf, -1, 4);		/* typmod */
+	pq_sendint(&buf, 0, 2);		/* format code */
+
 	pq_endmessage(&buf);
 
 	/* Send a DataRow message */
@@ -238,6 +252,9 @@ SendFtsResponse(FtsResponse *response, const char *messagetype)
 	pq_sendint(&buf, 1, 4); /* col5 len */
 	pq_sendint(&buf, response->RequestRetry, 1);
 
+	pq_sendint(&buf, 1, 4); /* col6 len */
+	pq_sendint(&buf, response->MasterProberStarted, 1);
+
 	pq_endmessage(&buf);
 	EndCommand(messagetype, DestRemote);
 	pq_flush();
@@ -252,6 +269,7 @@ HandleFtsWalRepProbe(void)
 		false, /* IsSyncRepEnabled */
 		false, /* IsRoleMirror */
 		false, /* RequestRetry */
+		(!IS_QUERY_DISPATCHER() && FtsProbePID() != 0), /* MasterProberStarted */
 	};
 
 	if (am_mirror)
@@ -275,6 +293,10 @@ HandleFtsWalRepProbe(void)
 		}
 	}
 
+	/* Trigger master prober */
+	if (shmFtsControl->startMasterProber && FtsProbePID() != 0)
+		SendPostmasterSignal(PMSIGNAL_WAKEN_FTS);
+
 	/*
 	 * Perform basic sanity check for disk IO on segment. Without this check
 	 * in many situations FTS didn't detect the problem and hence didn't
@@ -295,13 +317,14 @@ HandleFtsWalRepSyncRepOff(void)
 		false, /* IsSyncRepEnabled */
 		false, /* IsRoleMirror */
 		false, /* RequestRetry */
+		false, /* MasterProberStarted */
 	};
 
 	ereport(LOG,
 			(errmsg("turning off synchronous wal replication due to FTS request")));
 	UnsetSyncStandbysDefined();
-	GetMirrorStatus(&response);
 
+	GetMirrorStatus(&response);
 	SendFtsResponse(&response, FTS_MSG_SYNCREP_OFF);
 }
 
@@ -356,7 +379,7 @@ CreateReplicationSlotOnPromote(const char *name)
 }
 
 static void
-HandleFtsWalRepPromote(void)
+HandleFtsWalRepPromote(const char *query)
 {
 	FtsResponse response = {
 		false, /* IsMirrorUp */
@@ -364,40 +387,116 @@ HandleFtsWalRepPromote(void)
 		false, /* IsSyncRepEnabled */
 		am_mirror,  /* IsRoleMirror */
 		false, /* RequestRetry */
+		false, /* MasterProberStarted */
 	};
+	int dbid;
 
 	ereport(LOG,
 			(errmsg("promoting mirror to primary due to FTS request")));
 
-	/*
-	 * FTS sends promote message to a mirror.  The mirror may be undergoing
-	 * promotion.  Promote messages should therefore be handled in an
-	 * idempotent way.
-	 */
-	DBState state = GetCurrentDBState();
-	if (state == DB_IN_ARCHIVE_RECOVERY)
+	sscanf(query, FTS_MSG_PROMOTE_FMT, &dbid);
+
+	if (IS_QUERY_DISPATCHER() &&
+		shmFtsControl->masterProberDBID != 0 &&
+		dbid != shmFtsControl->masterProberDBID)
 	{
-		/*
-		 * Reset sync_standby_names on promotion. This is to avoid commits
-		 * hanging/waiting for replication till next FTS probe. Next FTS probe
-		 * will detect this node to be not in sync and reset the same which
-		 * can take a min. Since we know on mirror promotion its marked as not
-		 * in sync in gp_segment_configuration, best to right away clean the
-		 * sync_standby_names.
-		 */
-		UnsetSyncStandbysDefined();
-
-		CreateReplicationSlotOnPromote(INTERNAL_WAL_REPLICATION_SLOT_NAME);
-
-		SignalPromote();
+		elog(LOG, "ignoring promote request from deprecated master prober %d,"
+			 " current master prober %d", dbid, shmFtsControl->masterProberDBID);
 	}
 	else
 	{
-		elog(LOG, "ignoring promote request, walreceiver not running,"
-			 " DBState = %d", state);
+		/*
+		 * FTS sends promote message to a mirror.  The mirror may be undergoing
+		 * promotion.  Promote messages should therefore be handled in an
+		 * idempotent way.
+		 */
+		DBState state = GetCurrentDBState();
+		if (state == DB_IN_ARCHIVE_RECOVERY)
+		{
+			/*
+			 * Reset sync_standby_names on promotion. This is to avoid commits
+			 * hanging/waiting for replication till next FTS probe. Next FTS probe
+			 * will detect this node to be not in sync and reset the same which
+			 * can take a min. Since we know on mirror promotion its marked as not
+			 * in sync in gp_segment_configuration, best to right away clean the
+			 * sync_standby_names.
+			 */
+			UnsetSyncStandbysDefined();
+
+			CreateReplicationSlotOnPromote(INTERNAL_WAL_REPLICATION_SLOT_NAME);
+
+			SignalPromote();
+		}
+		else
+		{
+			elog(LOG, "ignoring promote request, walreceiver not running,"
+				 " DBState = %d", state);
+		}
 	}
 
 	SendFtsResponse(&response, FTS_MSG_PROMOTE);
+}
+
+static void
+HandleFtsWalRepNewMasterProber(const char *query)
+{
+	FtsResponse response = {
+		false, /* IsMirrorUp */
+		false, /* IsInSync */
+		false, /* IsSyncRepEnabled */
+		false, /* IsRoleMirror */
+		false, /* RequestRetry */
+		false, /* MasterProberStarted */
+	};
+
+	sscanf(query, FTS_MSG_NEW_MASTER_PROBER_FMT, &shmFtsControl->masterProberDBID);
+	elog(LOG, "master prober process is on segment %d", shmFtsControl->masterProberDBID);
+
+	SendFtsResponse(&response, FTS_MSG_NEW_MASTER_PROBER);
+}
+
+static void
+HandleFtsWalRepStartMasterProber(const char *query)
+{
+	int restart;
+	int ftsPid;
+	FtsResponse response = {
+		false, /* IsMirrorUp */
+		false, /* IsInSync */
+		false, /* IsSyncRepEnabled */
+		false, /* IsRoleMirror */
+		false, /* RequestRetry */
+		false, /* MasterProberStarted */
+	};
+
+	sscanf(query, FTS_MSG_START_MASTER_PROBER_SCAN_FMT, &restart);
+	ftsPid = FtsProbePID();
+
+	/* terminate the exsisting master prober process */
+	if (restart == 1 && ftsPid != 0)
+ 	{
+		kill(ftsPid, SIGTERM);
+		elog(LOG, "terminating master prober process: %d", ftsPid);
+		for(;;)
+		{
+			if (kill(ftsPid, 0) == -1 &&
+				errno == ESRCH)
+				break;
+			pg_usleep(100000L); /* 100ms */
+		}
+		elog(LOG, "master prober process terminated");
+		ftsPid = 0;
+ 	}
+ 
+	strncpy(shmFtsControl->masterProberMessage,
+			query,
+			sizeof(shmFtsControl->masterProberMessage));
+
+	elog(LOG, "start master prober process");
+	/* start master prober */
+	shmFtsControl->startMasterProber = true;
+	SendPostmasterSignal(PMSIGNAL_START_MASTER_PROBER);
+	SendFtsResponse(&response, FTS_MSG_START_MASTER_PROBER);
 }
 
 void
@@ -441,8 +540,20 @@ HandleFtsMessage(const char* query_string)
 		HandleFtsWalRepSyncRepOff();
 	else if (strncmp(query_string, FTS_MSG_PROMOTE,
 					 strlen(FTS_MSG_PROMOTE)) == 0)
-		HandleFtsWalRepPromote();
+		HandleFtsWalRepPromote(query_string);
+	else if (strncmp(query_string, FTS_MSG_NEW_MASTER_PROBER,
+					 strlen(FTS_MSG_NEW_MASTER_PROBER)) == 0)
+		HandleFtsWalRepNewMasterProber(query_string);
+	else if (strncmp(query_string, FTS_MSG_START_MASTER_PROBER,
+					 strlen(FTS_MSG_START_MASTER_PROBER)) == 0)
+		HandleFtsWalRepStartMasterProber(query_string);
 	else
 		ereport(ERROR,
 				(errmsg("received unknown FTS query: %s", query_string)));
+}
+
+void
+CreateInternalReplicationSlot(void)
+{
+	CreateReplicationSlotOnPromote(INTERNAL_WAL_REPLICATION_SLOT_NAME);
 }

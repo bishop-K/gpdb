@@ -73,6 +73,7 @@
 #include "cdb/cdbvars.h"
 #include "postmaster/postmaster.h"
 #include "replication/syncrep.h"
+#include "replication/gp_replication.h"
 #include "storage/sinvaladt.h"
 #include "utils/faultinjector.h"
 #include "utils/resscheduler.h"
@@ -7798,7 +7799,11 @@ StartupXLOG(void)
 	 * primary state while the recovery is trying to stream.
 	 */
 	if (needToPromoteCatalog)
+	{
+		UnsetSyncStandbysDefined();
+		CreateInternalReplicationSlot();
 		UpdateCatalogForStandbyPromotion();
+	}
 
 	/*
 	 * If this was a fast promotion, request an (online) checkpoint now. This

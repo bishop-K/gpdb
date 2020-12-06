@@ -48,3 +48,33 @@ class SegmentReconfigurer:
             else:
                 conn.close()
                 break
+
+class MasterReconfigurer:
+    def __init__(self, logger, gparray, timeout):
+        self.logger = logger
+        self.gpArray = gparray
+        self.timeout = timeout
+
+    def reconfigure(self):
+        self.logger.info("Triggering master reconfiguration")
+        master_prober = self.gpArray.get_master_prober()
+        standby = self.gpArray.standbyMaster
+        start_time = time.time()
+        while True:
+            try:
+                with dbconn.connect(dbconn.DbURL(hostname=master_prober.hostname, port=master_prober.port),
+                                    utility=True) as conn:
+                    res = dbconn.execSQL(conn, FTS_PROBE_QUERY).fetchone()[0]
+                    if res is not True:
+                        self.logger.info("gp_request_fts_probe_scan() failed")
+
+                conn = dbconn.connect(dbconn.DbURL(hostname=standby.hostname, port=standby.port))
+            except Exception as e:
+                now = time.time()
+                if now < start_time + self.timeout:
+                    continue
+                else:
+                    raise RuntimeError("Master promotion did not complete in {0} seconds.".format(self.timeout))
+            else:
+                conn.close()
+                break

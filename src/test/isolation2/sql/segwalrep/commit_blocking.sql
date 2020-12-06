@@ -1,5 +1,7 @@
 -- This test assumes 3 primaries and 3 mirrors from a gpdemo segwalrep cluster
 
+create extension if not exists gp_inject_fault;
+
 include: helpers/server_helpers.sql;
 
 -- make sure we are in-sync for the primary we will be testing with
@@ -13,9 +15,12 @@ create table segwalrep_commit_blocking (a int) distributed by (a);
 insert into segwalrep_commit_blocking values (5);
 
 -- skip FTS probes always
-create extension if not exists gp_inject_fault;
-select gp_inject_fault('fts_probe', 'reset', 1);
-select gp_inject_fault_infinite('fts_probe', 'skip', 1);
+select gp_inject_fault('fts_probe', 'reset', dbid)
+    from gp_segment_configuration
+    where content = -1 and role = 'p';
+select gp_inject_fault_infinite('fts_probe', 'skip', dbid)
+    from gp_segment_configuration
+    where content = -1 and role = 'p';
 -- force scan to trigger the fault
 select gp_request_fts_probe_scan();
 -- verify the failure should be triggered once
@@ -53,8 +58,77 @@ select gp_wait_until_triggered_fault('fts_probe', 1, 1);
 3<:
 
 -- resume FTS probes
-select gp_inject_fault('fts_probe', 'reset', 1);
+select gp_inject_fault('fts_probe', 'reset', dbid)
+    from gp_segment_configuration
+    where content = -1 and role = 'p';
 
 -- everything should be back to normal
 4: insert into segwalrep_commit_blocking select i from generate_series(1,10)i;
 4: select * from segwalrep_commit_blocking order by a;
+
+-----------------------------------------------------------------
+-- Master commit blocking
+--
+-----------------------------------------------------------------
+-- set synchronous_standby_names to '*'
+alter system set synchronous_standby_names to '*';
+
+-- reload to make synchronous_standby_names effective
+!\retcode gpstop -u;
+
+-- reset connection
+-- start_ignore
+begin;end;
+-- end_ignore
+
+select gp_inject_fault('fts_probe', 'reset', dbid)
+    from gp_segment_configuration
+    where content = 0 and role = 'p';
+select gp_inject_fault_infinite('fts_probe', 'skip', dbid)
+    from gp_segment_configuration
+    where content = 0 and role = 'p';
+
+-- create table and show commits are not blocked
+create table standbywalrep_commit_blocking (a int) distributed by (a);
+insert into standbywalrep_commit_blocking values (1);
+
+-- stop standby and show commit will block
+select pg_ctl((select datadir from gp_segment_configuration c where c.role='m' and c.content=-1), 'stop');
+
+-- this should block since standby is not up and sync replication is on
+3: begin;
+3: insert into standbywalrep_commit_blocking values (2);
+3&: commit;
+
+-- set synchronous_standby_names to ''
+alter system set synchronous_standby_names to '';
+
+-- reload to make synchronous_standby_names effective
+!\retcode gpstop -u;
+
+-- should unblock and commit now that synchronous_standby_names set to ''
+3<:
+
+-- bring the standby back up
+select pg_ctl_start(datadir, port, content, dbid) from gp_segment_configuration where role='m' and content=-1;
+
+-- set synchronous_standby_names to '*'
+alter system set synchronous_standby_names to '*';
+
+-- reload to make synchronous_standby_names effective
+!\retcode gpstop -u;
+
+-- everything should be back to normal
+insert into standbywalrep_commit_blocking select i from generate_series(1,10)i;
+select * from standbywalrep_commit_blocking order by a;
+
+-- set synchronous_standby_names to default value
+alter system set synchronous_standby_names to default;
+
+-- reload to make synchronous_standby_names effective
+!\retcode gpstop -u;
+
+-- resume FTS probes
+select gp_inject_fault('fts_probe', 'reset', dbid)
+    from gp_segment_configuration
+    where content = 0 and role = 'p';

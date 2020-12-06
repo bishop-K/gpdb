@@ -224,6 +224,7 @@ int			gp_resource_group_cpu_priority;
 double		gp_resource_group_cpu_limit;
 double		gp_resource_group_memory_limit;
 bool		gp_resource_group_bypass;
+bool		gp_enable_master_autofailover;
 
 /* Perfmon segment GUCs */
 int			gp_perfmon_segment_interval;
@@ -3076,6 +3077,16 @@ struct config_bool ConfigureNamesBool_gp[] =
 			GUC_NO_SHOW_ALL | GUC_NOT_IN_SAMPLE
 		},
 		&gp_add_column_inherits_table_setting,
+		false,
+		NULL, NULL, NULL
+	},
+
+	{
+		{"gp_enable_master_autofailover", PGC_POSTMASTER, REPLICATION,
+			gettext_noop("Start master prober and enable master auto-failover."),
+			NULL
+		},
+		&gp_enable_master_autofailover,
 		false,
 		NULL, NULL, NULL
 	},

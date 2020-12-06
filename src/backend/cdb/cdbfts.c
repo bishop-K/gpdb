@@ -34,6 +34,7 @@
 #include "executor/spi.h"
 
 #include "postmaster/fts.h"
+#include "postmaster/postmaster.h"
 #include "utils/faultinjection.h"
 
 #include "utils/fmgroids.h"
@@ -44,6 +45,7 @@
 
 volatile FtsProbeInfo *ftsProbeInfo = NULL;	/* Probe process updates this structure */
 static LWLockId ftsControlLock;
+FtsControlBlock *shmFtsControl = NULL;
 
 extern volatile bool *pm_launch_walreceiver;
 
@@ -53,12 +55,6 @@ extern volatile bool *pm_launch_walreceiver;
 int
 FtsShmemSize(void)
 {
-	/*
-	 * this shared memory block doesn't even need to *exist* on the QEs!
-	 */
-	if ((Gp_role != GP_ROLE_DISPATCH) && (Gp_role != GP_ROLE_UTILITY))
-		return 0;
-
 	return MAXALIGN(sizeof(FtsControlBlock));
 }
 
@@ -66,24 +62,26 @@ void
 FtsShmemInit(void)
 {
 	bool		found;
-	FtsControlBlock *shared;
 
-	shared = (FtsControlBlock *) ShmemInitStruct("Fault Tolerance manager", FtsShmemSize(), &found);
-	if (!shared)
+	shmFtsControl = (FtsControlBlock *) ShmemInitStruct("Fault Tolerance manager", FtsShmemSize(), &found);
+	if (!shmFtsControl)
 		elog(FATAL, "FTS: could not initialize fault tolerance manager share memory");
 
 	/* Initialize locks and shared memory area */
-	ftsControlLock = shared->ControlLock;
-	ftsProbeInfo = &shared->fts_probe_info;
-	pm_launch_walreceiver = &shared->pm_launch_walreceiver;
+	pm_launch_walreceiver = &shmFtsControl->pm_launch_walreceiver;
+	ftsControlLock = shmFtsControl->ControlLock;
+	ftsProbeInfo = &shmFtsControl->fts_probe_info;
 
-	if (!IsUnderPostmaster)
+	if (!IsUnderPostmaster && !found)
 	{
-		shared->ControlLock = LWLockAssign();
-		ftsControlLock = shared->ControlLock;
+		shmFtsControl->ControlLock = LWLockAssign();
+		ftsControlLock = shmFtsControl->ControlLock;
 
-		shared->fts_probe_info.status_version = 0;
-		shared->pm_launch_walreceiver = false;
+		shmFtsControl->fts_probe_info.status_version= 0;
+		shmFtsControl->pm_launch_walreceiver = false;
+		shmFtsControl->startMasterProber = false;
+		shmFtsControl->masterProberDBID = 0;
+		shmFtsControl->masterProberMessage[0] = '\0';
 	}
 }
 
@@ -103,7 +101,8 @@ ftsUnlock(void)
 void
 FtsNotifyProber(void)
 {
-	Assert(Gp_role == GP_ROLE_DISPATCH);
+	Assert (Gp_role == GP_ROLE_DISPATCH ||
+			(!IS_QUERY_DISPATCHER() && FtsProbePID() != 0));
 	int32			initial_started;
 	int32			started;
 	int32			done;

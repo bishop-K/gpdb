@@ -113,6 +113,10 @@ class GpStart:
             if self.masteronly:
                 return 0
 
+            standby_started = self._start_standby()
+            if standby_started:
+                logger.info("Standby Started...")
+
             if self.skip_heap_checksum_validation:
                 self.master_checksum_value = None
                 logger.warning("Because of --skip-heap-checksum-validation, the GUC for data_checksums "
@@ -146,7 +150,7 @@ class GpStart:
             # Disable Ctrl-C
             signal.signal(signal.SIGINT, signal.SIG_IGN)
 
-            success = self._start(segmentsToStart, invalidSegments)
+            success = self._start(segmentsToStart, invalidSegments, standby_started)
         finally:
             # Reenable Ctrl-C
             signal.signal(signal.SIGINT, signal.default_int_handler)
@@ -416,7 +420,7 @@ class GpStart:
         self.era = e.era
 
     ######
-    def _start(self, segmentsToStart, invalidSegments):
+    def _start(self, segmentsToStart, invalidSegments, standby_was_started):
         """ starts all of the segments, the master and the standby master
 
             returns whether all segments that should be started were started successfully
@@ -460,9 +464,6 @@ class GpStart:
         master_result, message = self._start_final_master()
         if not master_result:
             return False
-
-        # start standby after master in dispatch mode comes up
-        standby_was_started = self._start_standby()
 
         # report if we complete operations
         return self._check_final_result(

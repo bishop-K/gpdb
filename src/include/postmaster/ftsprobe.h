@@ -24,6 +24,7 @@ typedef struct
 	bool isSyncRepEnabled;
 	bool isRoleMirror;
 	bool retryRequested;
+	bool masterProberStarted;
 } fts_result;
 
 /* States used by FTS main loop for probing segments. */
@@ -92,5 +93,6 @@ typedef struct
 	fts_segment_info *perSegInfos;
 } fts_context;
 
-extern bool FtsWalRepMessageSegments(CdbComponentDatabases *context);
+extern bool FtsWalRepMessageSegments(CdbComponentDatabases *cdbs, bool amMasterProber, bool *masterProberStarted);
+extern bool FtsWalRepMessageOneSegment(CdbComponentDatabaseInfo *cdb, const char *message);
 #endif

@@ -65,11 +65,12 @@ class SQLIsolationExecutor(object):
             self.dbname = os.environ.get('PGDATABASE')
 
     class SQLConnection(object):
-        def __init__(self, out_file, name, mode, dbname):
+        def __init__(self, out_file, name, mode, dbname, port=None):
             self.name = name
             self.mode = mode
             self.out_file = out_file
             self.dbname = dbname
+            self.port = port
 
             parent_conn, child_conn = multiprocessing.Pipe(True)
             self.p = multiprocessing.Process(target=self.session_process, args=(child_conn,))   
@@ -85,7 +86,7 @@ class SQLIsolationExecutor(object):
 
         def session_process(self, pipe):
             sp = SQLIsolationExecutor.SQLSessionProcess(self.name, 
-                self.mode, pipe, self.dbname)
+                self.mode, pipe, self.dbname, self.port)
             sp.do()
 
         def query(self, command):
@@ -138,7 +139,7 @@ class SQLIsolationExecutor(object):
             self.p.terminate()
 
     class SQLSessionProcess(object):
-        def __init__(self, name, mode, pipe, dbname):
+        def __init__(self, name, mode, pipe, dbname, port=None):
             """
                 Constructor
             """
@@ -162,7 +163,7 @@ class SQLIsolationExecutor(object):
                                           given_host=hostname,
                                           given_port=port)
             else:
-                self.con = self.connectdb(self.dbname)
+                self.con = self.connectdb(self.dbname, given_port=port)
 
         def connectdb(self, given_dbname, given_host = None, given_port = None, given_opt = None):
             con = None
@@ -303,7 +304,7 @@ class SQLIsolationExecutor(object):
                 (c, wait) = self.pipe.recv()
 
 
-    def get_process(self, out_file, name, mode="", dbname=""):
+    def get_process(self, out_file, name, mode="", dbname="", port=None):
         """
             Gets or creates the process by the given name
         """
@@ -312,10 +313,13 @@ class SQLIsolationExecutor(object):
         if len(name) > 0 and mode != "utility" and int(name) >= 1024:
             raise Exception("Session name should be smaller than 1024 unless it is utility mode number")
 
-        if not (name, mode) in self.processes:
+        if not (name, mode) in self.processes or port is not None:
             if not dbname:
                 dbname = self.dbname
-            self.processes[(name, mode)] = SQLIsolationExecutor.SQLConnection(out_file, name, mode, dbname)
+            if (name, utility_mode) in self.processes:
+                self.processes[(name, utility_mode)].quit()
+                del self.processes[(name, utility_mode)]
+            self.processes[(name, utility_mode)] = SQLIsolationExecutor.SQLConnection(out_file, name, utility_mode, dbname, port)
         return self.processes[(name, mode)]
 
     def quit_process(self, out_file, name, mode="", dbname=""):
@@ -419,6 +423,16 @@ class SQLIsolationExecutor(object):
                 ).query(
                     load_helper_file(helper_file)
                 )
+            elif sql.startswith('\\c'):
+                connect_args = sql.split(';')[0].split(' ')
+                if len(connect_args) == 2:
+                    if not connect_args[1].isdigit():
+                        raise Exception('Invalid port')
+                    port = int(connect_args[1])
+                elif len(connect_args) > 2:
+                    raise Exception('Invalid connect args: {}'.format(connect_args))
+
+                self.get_process(output_file, process_name, dbname=dbname, port=port)
             else:
                 self.get_process(output_file, process_name, con_mode, dbname=dbname).query(sql.strip())
         elif flag == "&":

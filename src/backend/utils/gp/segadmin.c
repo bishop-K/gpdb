@@ -25,6 +25,7 @@
 #include "cdb/cdbutil.h"
 #include "cdb/cdbvars.h"
 #include "cdb/cdbfts.h"
+#include "postmaster/fts.h"
 #include "postmaster/startup.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
@@ -705,68 +706,6 @@ gp_remove_master_standby(PG_FUNCTION_ARGS)
 	PG_RETURN_BOOL(true);
 }
 
-static void
-segment_config_activate_standby(int16 standby_dbid, int16 master_dbid)
-{
-	/* we use AccessExclusiveLock to prevent races */
-	Relation	rel = heap_open(GpSegmentConfigRelationId, AccessExclusiveLock);
-	HeapTuple	tuple;
-	ScanKeyData scankey;
-	SysScanDesc sscan;
-	int			numDel = 0;
-
-	/* first, delete the old master */
-	ScanKeyInit(&scankey,
-				Anum_gp_segment_configuration_dbid,
-				BTEqualStrategyNumber, F_INT2EQ,
-				Int16GetDatum(master_dbid));
-	sscan = systable_beginscan(rel, GpSegmentConfigDbidIndexId, true,
-							   NULL, 1, &scankey);
-	while ((tuple = systable_getnext(sscan)) != NULL)
-	{
-		simple_heap_delete(rel, &tuple->t_self);
-		numDel++;
-	}
-	systable_endscan(sscan);
-
-	if (0 == numDel)
-		elog(ERROR, "cannot find old master, dbid %i", master_dbid);
-
-	/* now, set out rows for old standby. */
-	ScanKeyInit(&scankey,
-				Anum_gp_segment_configuration_dbid,
-				BTEqualStrategyNumber, F_INT2EQ,
-				Int16GetDatum(standby_dbid));
-	sscan = systable_beginscan(rel, GpSegmentConfigDbidIndexId, true,
-							   NULL, 1, &scankey);
-
-	tuple = systable_getnext(sscan);
-
-	if (!HeapTupleIsValid(tuple))
-		elog(ERROR, "cannot find standby, dbid %i", standby_dbid);
-
-	tuple = heap_copytuple(tuple);
-	/* old standby keeps its previous dbid. */
-	((Form_gp_segment_configuration) GETSTRUCT(tuple))->role = GP_SEGMENT_CONFIGURATION_ROLE_PRIMARY;
-	((Form_gp_segment_configuration) GETSTRUCT(tuple))->preferred_role = GP_SEGMENT_CONFIGURATION_ROLE_PRIMARY;
-
-	simple_heap_update(rel, &tuple->t_self, tuple);
-	CatalogUpdateIndexes(rel, tuple);
-
-	systable_endscan(sscan);
-
-	heap_close(rel, NoLock);
-}
-
-/*
- * Update gp_segment_configuration to activate a standby.
- */
-static void
-catalog_activate_standby(int16 standby_dbid, int16 master_dbid)
-{
-	segment_config_activate_standby(standby_dbid, master_dbid);
-}
-
 /*
  * Activate a standby. To do this, we need to update gp_segment_configuration.
  *
@@ -776,10 +715,12 @@ catalog_activate_standby(int16 standby_dbid, int16 master_dbid)
 bool
 gp_activate_standby(void)
 {
-	int16		standby_dbid = GpIdentity.dbid;
-	int16		master_dbid;
+	int16		masterdbid;
+	int16		standbydbid;
+	int16		mydbid = GpIdentity.dbid;
 
-	master_dbid = contentid_get_dbid(MASTER_CONTENT_ID, GP_SEGMENT_CONFIGURATION_ROLE_PRIMARY, true);
+	masterdbid = contentid_get_dbid(MASTER_CONTENT_ID, GP_SEGMENT_CONFIGURATION_ROLE_PRIMARY, false);
+	standbydbid = contentid_get_dbid(MASTER_CONTENT_ID, GP_SEGMENT_CONFIGURATION_ROLE_MIRROR, false);
 
 	/*
 	 * This call comes from Startup process post checking state in pg_control
@@ -789,7 +730,7 @@ gp_activate_standby(void)
 	 * for StartUp Process, to cover for case of crash after updating the
 	 * catalogs during promote.
 	 */
-	if (am_startup && (master_dbid == standby_dbid))
+	if (am_startup && (masterdbid == mydbid))
 	{
 		/*
 		 * Job is already done, nothing needs to be done. We mostly crashed
@@ -801,7 +742,8 @@ gp_activate_standby(void)
 	mirroring_sanity_check(SUPERUSER | UTILITY_MODE | STANDBY_ONLY,
 						   PG_FUNCNAME_MACRO);
 
-	catalog_activate_standby(standby_dbid, master_dbid);
+	probeWalRepUpdateConfig(standbydbid, -1, 'p', true, false);
+	probeWalRepUpdateConfig(masterdbid, -1, 'm', false, false);
 
 	/* done */
 	return true;
@@ -810,14 +752,17 @@ gp_activate_standby(void)
 Datum
 gp_request_fts_probe_scan(PG_FUNCTION_ARGS)
 {
-	if (Gp_role != GP_ROLE_DISPATCH)
+	if (Gp_role == GP_ROLE_DISPATCH ||
+		(!IS_QUERY_DISPATCHER() && FtsProbePID() != 0))
 	{
-		ereport(ERROR,
-				(errmsg("this function can only be called by master (without utility mode)")));
+		FtsNotifyProber();
+
+		PG_RETURN_BOOL(true);
+	}
+	else
+	{
+		ereport(ERROR, (errmsg("This function can only be called by master (without utility mode) "
+							   "or master prober segment.")));
 		PG_RETURN_BOOL(false);
 	}
-
-	FtsNotifyProber();
-
-	PG_RETURN_BOOL(true);
 }

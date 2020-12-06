@@ -477,7 +477,7 @@ DATA(insert OID = 5051 ( gp_remove_segment  PGNSP PGUID 12 1 0 0 0 f f f f f f v
 DESCR("Remove a primary segment from the system catalog");
 
 /* gp_request_fts_probe_scan() => bool */
-DATA(insert OID = 5035 ( gp_request_fts_probe_scan  PGNSP PGUID 12 1 0 0 0 f f f f f f v 0 0 16 "" _null_ _null_ _null_ _null_ gp_request_fts_probe_scan _null_ _null_ _null_ n m ));
+DATA(insert OID = 5035 ( gp_request_fts_probe_scan  PGNSP PGUID 12 1 0 0 0 f f f f f f v 0 0 16 "" _null_ _null_ _null_ _null_ gp_request_fts_probe_scan _null_ _null_ _null_ n a ));
 DESCR("Request a FTS probe scan and wait for response");
 
 /* cosh(float8) => float8 */

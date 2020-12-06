@@ -6,6 +6,7 @@
 import os
 import sys
 import signal
+import time
 
 # import GPDB modules
 try:
@@ -284,9 +285,12 @@ def delete_standby(options):
     # delete directory
     remove_standby_datadir(array)
 
+    # trigger master prober
+    trigger_master_prober(array)
+
     # Reenable Ctrl-C
     signal.signal(signal.SIGINT,signal.default_int_handler)
-  
+
 #-------------------------------------------------------------------------
 def remove_standby_datadir(array):
     """Removes the data directory on the standby master."""
@@ -311,7 +315,17 @@ def remove_standby_datadir(array):
             raise GpInitStandbyException(ex)
         finally:
             pool.haltWork()
-            
+
+def trigger_master_prober(array):
+    if array.is_master_prober_enabled():
+        return
+
+    master_prober = array.get_master_prober()
+    with dbconn.connect(dbconn.DbURL(hostname=master_prober.hostname, port=master_prober.port),
+                        utility=True) as conn:
+        res = dbconn.execSQL(conn, "SELECT gp_request_fts_probe_scan()")
+        res.fetchall()
+
 def check_and_start_standby():
     """Checks if standby master is up and starts the standby master, if stopped."""
 

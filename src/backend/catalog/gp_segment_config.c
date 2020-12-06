@@ -51,3 +51,43 @@ gp_segment_config_has_mirrors()
 
 	return mirrors_exist;
 }
+
+
+/*
+ * Tell the caller whether standby exist.
+ */
+bool
+gp_segment_config_has_standby()
+{
+	bool standby_exist;
+	Relation rel;
+	ScanKeyData scankey[2];
+	SysScanDesc scan;
+	HeapTuple tuple;
+
+	rel = heap_open(GpSegmentConfigRelationId, AccessShareLock);
+
+	/*
+	 * SELECT dbid FROM gp_segment_configuration
+	 * WHERE content = :1 AND role = :2
+	 */
+	ScanKeyInit(&scankey[0],
+				Anum_gp_segment_configuration_content,
+				BTEqualStrategyNumber, F_INT2EQ,
+				Int16GetDatum(MASTER_CONTENT_ID));
+	ScanKeyInit(&scankey[1],
+				Anum_gp_segment_configuration_role,
+				BTEqualStrategyNumber, F_CHAREQ,
+				CharGetDatum('m'));
+
+	scan = systable_beginscan(rel, InvalidOid, false,
+							  NULL, 2, scankey);
+
+	tuple = systable_getnext(scan);
+	standby_exist = HeapTupleIsValid(tuple);
+
+	systable_endscan(scan);
+	heap_close(rel, AccessShareLock);
+
+	return standby_exist;
+}
