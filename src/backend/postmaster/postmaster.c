@@ -5480,6 +5480,7 @@ sigusr1_handler(SIGNAL_ARGS)
 	/* start master prober */
 	if (CheckPostmasterSignal(PMSIGNAL_START_MASTER_PROBER))
 	{
+		load_auxiliary_libraries();
 		StartWorkerNeeded = true;
 	}
 	/*

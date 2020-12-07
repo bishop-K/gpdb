@@ -155,9 +155,9 @@ class ConfExpSegCmd(Command):
 
                     logger.info("Successfully ran pg_basebackup: %s" % cmd.cmdStr)
                     logger.info("Updating %s/postgresql.conf" % self.datadir)
-                    modifyPostgresqlConfCmd = ModifyPostgresqlConfSetting('Updating %s/postgresql.conf' % self.datadir,
-                                                                          self.datadir + '/postgresql.conf',
-                                                                          'port', self.port, optType='number')
+                    modifyPostgresqlConfCmd = ModifyConfSetting('Updating %s/postgresql.conf' % self.datadir,
+                                                                self.datadir + '/postgresql.conf',
+                                                                'port', self.port, optType='number')
                     try:
                         modifyPostgresqlConfCmd.run(validateAfter=True)
                     except:

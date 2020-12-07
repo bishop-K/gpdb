@@ -30,8 +30,9 @@
  * string from QD to QE. Format for which is defined using FTS_MSG_FORMAT and
  * first part of it string to define type of fts message like FTS_MSG_PROBE,
  * FTS_MSG_SYNCREP_OFF or FTS_MSG_PROMOTE.
+ * MASTER_PROBER_MESSAGE_MAXLEN + 100
  */
-#define FTS_MSG_MAX_LEN 100
+#define FTS_MSG_MAX_LEN 1124 
 
 /*
  * If altering the fts message format, consider if FTS_MSG_MAX_LEN is enough

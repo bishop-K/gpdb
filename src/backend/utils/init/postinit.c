@@ -1141,7 +1141,7 @@ InitPostgres(const char *in_dbname, Oid dboid, const char *username,
 				(errcode(ERRCODE_CANNOT_CONNECT_NOW),
 				 errmsg("System was started in master-only utility mode - only utility mode connections are allowed")));
 	}
-	else if ((Gp_session_role == GP_ROLE_DISPATCH) && !IS_QUERY_DISPATCHER())
+	else if ((Gp_session_role == GP_ROLE_DISPATCH) && (!IS_QUERY_DISPATCHER() && !am_ftsprobe))
 	{
 		ereport(FATAL,
 				(errcode(ERRCODE_CANNOT_CONNECT_NOW),

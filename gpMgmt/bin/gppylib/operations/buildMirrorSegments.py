@@ -413,12 +413,9 @@ class GpMirrorListToBuild:
                 rewindFailedSegments.append(targetSegment)
             else:
                 # postgresql.conf is overwritten, set the correct 'port'
-                cmd = gp.GpAddConfigScript('update config',
-                                           targetSegment.getSegmentDataDirectory(),
-                                           'port',
-                                           value=str(targetSegment.getSegmentPort()),
-                                           ctxt=gp.REMOTE,
-                                           remoteHost=targetSegment.getSegmentHostName())
+                cmd_name = "correct 'port' parameter on host %s" % targetSegment.getSegmentHostName()
+                cmd = gp.GpConfigHelper(cmd_name, targetSegment.getSegmentDataDirectory(), 'port', value=str(targetSegment.getSegmentPort()),
+                                     ctxt=gp.REMOTE, remoteHost=targetSegment.getSegmentHostName())
                 cmd.run(validateAfter=True)
 
         self.__pool.empty_completed_items()
@@ -869,9 +866,15 @@ class GpMirrorListToBuild:
                                         standby.hostname,
                                         standby.datadir,
                                         standby.port,
-                                        gpArray.getNumSegmentContents(),
-                                        standby.dbid,
-                                        era=era)
+                                        era=era,
+                                        wrapper=standby.dbid,
+                                        wrapper_args=gpArray.getNumSegmentContents())
+            #cmd = gp.start_standbymaster('start standby master', 
+            #                             standby.hostname,
+            #                             standby.datadir,
+            #                             standby.port,
+            #                             standby.dbid,
+            #                             gpArray.getNumSegmentContents())
             logger.debug("Starting standby: %s" % cmd)
             logger.debug("Starting standby master results: %s" % cmd.get_results())
             start_standby_successfull = cmd.get_results().rc == 0

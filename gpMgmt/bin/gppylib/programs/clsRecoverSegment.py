@@ -722,7 +722,7 @@ class GpRecoverSegmentProgram:
             confProvider.sendPgElogFromMaster("Recovery of %d segment(s) has been started." % \
                                               len(mirrorBuilder.getMirrorsToBuild()), True)
 
-            self.trigger_fts_probe(port=gpEnv.getMasterPort())
+            self.trigger_fts_probe(gpArray, port=gpEnv.getMasterPort())
 
             self.logger.info("******************************************************************")
             self.logger.info("Updating segments for streaming is completed.")
@@ -732,7 +732,7 @@ class GpRecoverSegmentProgram:
 
         sys.exit(0)
 
-    def trigger_fts_probe(self, port=0):
+    def trigger_fts_probe(self, gpArray, port=0):
         self.logger.info('Triggering FTS probe')
         master = gpArray.master
         with dbconn.connect(dbconn.DbURL(hostname=master.getSegmentHostName(), port=master.getSegmentPort())) as conn:

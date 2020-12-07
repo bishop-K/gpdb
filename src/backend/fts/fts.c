@@ -131,6 +131,12 @@ FtsProbeStartRule(Datum main_arg)
 	if (IsUnderMasterDispatchMode())
 		return true;
 
+	/* start master prober */
+	if (gp_enable_master_autofailover &&
+		GpIdentity.segindex == 0 &&
+		shmFtsControl && shmFtsControl->startMasterProber)
+		return true;
+
 	return false;
 }
 
@@ -339,8 +345,9 @@ static
 bool notifyStandbyMasterProberDbid(CdbComponentDatabases *cdbs, int dbid)
 {
 	CdbComponentDatabaseInfo *standby = NULL;
-	char		message[50];
-	int		i;
+	char proberMessage[30];
+	char message[FTS_MSG_MAX_LEN];
+	int i;
 
 	for (i = 0; i < cdbs->total_entry_dbs; i++)
 	{
@@ -355,7 +362,11 @@ bool notifyStandbyMasterProberDbid(CdbComponentDatabases *cdbs, int dbid)
 	if (standby == NULL || !standbyIsInSync())
 		return false;
 
-	snprintf(message, sizeof(message), FTS_MSG_NEW_MASTER_PROBER_FMT, dbid);
+	snprintf(proberMessage, sizeof(proberMessage), FTS_MSG_NEW_MASTER_PROBER_FMT, dbid);
+	snprintf(message, FTS_MSG_MAX_LEN, FTS_MSG_FORMAT,
+			proberMessage,
+			standby->config->dbid,
+			standby->config->segindex);
 	return FtsWalRepMessageOneSegment(standby, message);
 }
 
@@ -365,7 +376,8 @@ bool notifyStandbyMasterProberDbid(CdbComponentDatabases *cdbs, int dbid)
 static
 bool notifySegmentStartMasterProber(CdbComponentDatabases *cdbs, bool restart)
 {
-	char message[MASTER_PROBER_MESSAGE_MAXLEN];
+	char proberMessage[MASTER_PROBER_MESSAGE_MAXLEN];
+	char message[FTS_MSG_MAX_LEN];
 	struct GpSegConfigEntry *master = NULL;
 	struct GpSegConfigEntry *standby = NULL;
 	int i;
@@ -387,13 +399,17 @@ bool notifySegmentStartMasterProber(CdbComponentDatabases *cdbs, bool restart)
 	 * START_MASTER_PROBER;<is_restart>;<dbid>;<preferred_role>;<role>;<hostname>;<address>;
 	 * <port>;<dbid>;<preferred_role>;<role>;<hostname>;<address>;<port>
 	 */
-	snprintf(message, sizeof(message),
+	snprintf(proberMessage, MASTER_PROBER_MESSAGE_MAXLEN,
 			FTS_MSG_START_MASTER_PROBER_FMT,
 			restart,
 			master->dbid, master->preferred_role, master->role,
 			master->hostname, master->address, master->port,
 			standby->dbid, standby->preferred_role, standby->role,
 			standby->hostname, standby->address, standby->port);
+	snprintf(message, FTS_MSG_MAX_LEN, FTS_MSG_FORMAT,
+			proberMessage,
+			cdbs->segment_db_info[0].config->dbid,
+			cdbs->segment_db_info[0].config->segindex);
 	return FtsWalRepMessageOneSegment(&cdbs->segment_db_info[0], message);
 }
 
